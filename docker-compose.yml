@@ -1,0 +1,48 @@
+services:
+  validator:
+    build:
+      context: .
+    image: astrid-intelligence/validator
+    environment:
+      NODE_ENV: development
+      REDIS_URL: redis://redis:6379
+      HEARTBEAT_INTERVAL_MS: '15000'
+      MAX_CONCURRENT_TASKS: '2'
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./:/app
+      - /app/node_modules
+      - /var/run/docker.sock:/var/run/docker.sock
+    labels:
+      - 'com.centurylinklabs.watchtower.enable=true'
+
+  redis:
+    image: redis:7
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Optional Dev Tools (enable with: --profile tools)
+  redis-commander:
+    profiles: ['tools']
+    image: rediscommander/redis-commander:latest
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - '8081:8081'
+    depends_on:
+      redis:
+        condition: service_started
+
+volumes:
+  redis-data:
