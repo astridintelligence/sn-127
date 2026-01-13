@@ -119,12 +119,32 @@ const submitWeights = async (identity: ValidatorIdentity, targets: readonly Bitt
 
     const extrinsic = api.tx.subtensorModule.setWeights(config.bittensor.netuid, uids, weights, config.bittensor.versionKey);
 
+    let blockNumber: number | null = null;
+    let extrinsicIndex: number | null = null;
+    let transactionHash: string | null = null;
+
     await new Promise<void>(async (resolve, reject) => {
         let unsub: (() => void) | undefined;
 
         try {
-            unsub = await extrinsic.signAndSend(identity.pair, (result: any) => {
-                const { status, dispatchError } = result;
+            unsub = await extrinsic.signAndSend(identity.pair, async (result: any) => {
+                const { status, dispatchError, txHash } = result;
+
+                if (result.status.isInBlock || result.status.isFinalized) {
+                    const blockHash = result.status.isInBlock ? result.status.asInBlock : result.status.asFinalized;
+
+                    const signedBlock = await api.rpc.chain.getBlock(blockHash);
+                    blockNumber = signedBlock.block.header.number.toNumber();
+
+                    const extrinsics = signedBlock.block.extrinsics;
+                    extrinsicIndex = -1;
+
+                    extrinsics.forEach((ex, index) => {
+                        if (ex.hash.toHex() === extrinsic.hash.toHex()) {
+                            extrinsicIndex = index;
+                        }
+                    });
+                }
 
                 if (dispatchError) {
                     if (dispatchError.isModule) {
@@ -157,6 +177,8 @@ const submitWeights = async (identity: ValidatorIdentity, targets: readonly Bitt
                         'bittensor weights included in block'
                     );
 
+                    transactionHash = txHash?.toString() ?? null;
+
                     unsub?.();
                     resolve();
                 } else if (status.isFinalized) {
@@ -175,6 +197,8 @@ const submitWeights = async (identity: ValidatorIdentity, targets: readonly Bitt
             reject(err);
         }
     });
+
+    console.log(`Block Number: ${blockNumber}, Extrinsic Index: ${extrinsicIndex}, Transaction Hash: ${transactionHash}`);
 };
 
 export const startBittensorWeightService = async (identity: ValidatorIdentity): Promise<NodeJS.Timeout | null> => {
@@ -201,6 +225,8 @@ export const startBittensorWeightService = async (identity: ValidatorIdentity): 
             }
 
             await submitWeights(identity, targets);
+
+            console.log('Submitted weights successfully');
         } catch (err) {
             logger.error({ err }, 'failed to submit bittensor weights');
         }

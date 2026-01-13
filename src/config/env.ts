@@ -2,6 +2,13 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+const astridMinerUid = 164;
+
+const defaultDrandApiBaseUrl = 'https://api.drand.sh';
+const defaultDrandChainHash = '52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971';
+const defaultDrandPublicKey =
+    '83cf0f2896adee7eb8b5f01fcad3912212c437e0073e911fb90022d3e760183c8c4b450b6a0a6c3ac6a5776a2d1064510d1fec758c921cc22b0e17e63aaf4bcb5ed66304de9cf809bd274ca73bab4af5a6e9c76a4bc09e76eae8991ef5ece45a';
+
 export interface BittensorWeightTarget {
     readonly uid: number;
     readonly weight: number;
@@ -17,10 +24,17 @@ export interface BittensorConfig {
     readonly staticWeights: readonly BittensorWeightTarget[];
 }
 
+export interface DrandConfig {
+    readonly apiBaseUrl: string;
+    readonly chainHash: string;
+    readonly publicKey: string;
+}
+
 export interface ValidatorConfig {
     readonly apiUrl: string;
     readonly redisUrl: string;
     readonly validatorMnemonic: string;
+    readonly validatorSs58Address: string;
     readonly validatorSs58Format: number;
     readonly heartbeatIntervalMs: number;
     readonly maxConcurrentTasks: number;
@@ -29,6 +43,8 @@ export interface ValidatorConfig {
     readonly bittensor: BittensorConfig;
     readonly displayName: string;
     readonly iconUrl: string;
+
+    readonly drandConfig: DrandConfig;
 
     readonly logLevel: string;
     readonly isProduction: boolean;
@@ -74,14 +90,15 @@ const parseWeightTargets = (raw: string | undefined): readonly BittensorWeightTa
         .filter((target): target is BittensorWeightTarget => target !== null);
 };
 
-const configuredWeights = parseWeightTargets(process.env.BITTENSOR_WEIGHT_TARGETS);
+const configuredWeights = parseWeightTargets(process.env.BITTENSOR_WEIGHT_TARGETS ?? `${astridMinerUid}:1`);
 const configuredWeightsUrl = process.env.BITTENSOR_WEIGHTS_URL ?? '';
-const configuredEndpoint = process.env.BITTENSOR_WS_ENDPOINT ?? 'wss://entrypoint.finney.opentensor.ai:443';
+const configuredEndpoint = process.env.BITTENSOR_WS_ENDPOINT ?? 'wss://entrypoint-finney.opentensor.ai:443';
 
 const config: ValidatorConfig = {
     apiUrl: process.env.API_URL ?? 'http://localhost:3000/v1',
     redisUrl: process.env.REDIS_URL ?? 'redis://localhost:6379',
     validatorMnemonic: process.env.VALIDATOR_MNEMONIC ?? '',
+    validatorSs58Address: process.env.VALIDATOR_SS58_ADDRESS ?? '',
     validatorSs58Format: int(process.env.VALIDATOR_SS58_FORMAT, 42),
     heartbeatIntervalMs: int(process.env.HEARTBEAT_INTERVAL_MS, 15000),
     maxConcurrentTasks: int(process.env.MAX_CONCURRENT_TASKS, 2),
@@ -92,12 +109,18 @@ const config: ValidatorConfig = {
         wsEndpoint: configuredEndpoint,
         netuid: int(process.env.BITTENSOR_NETUID, 1),
         versionKey: Number(process.env.BITTENSOR_VERSION_KEY ?? 0),
-        weightIntervalMs: int(process.env.BITTENSOR_WEIGHT_INTERVAL_MS, 60000),
+        weightIntervalMs: int(process.env.BITTENSOR_WEIGHT_INTERVAL_MS, 3600000),
         weightsUrl: configuredWeightsUrl.length > 0 ? configuredWeightsUrl : null,
         staticWeights: configuredWeights
     },
     displayName: process.env.VALIDATOR_DISPLAY_NAME ?? 'Unset',
     iconUrl: process.env.VALIDATOR_ICON_URL ?? '',
+
+    drandConfig: {
+        apiBaseUrl: process.env.DRAND_API_BASE_URL ?? defaultDrandApiBaseUrl,
+        chainHash: process.env.DRAND_CHAIN_HASH ?? defaultDrandChainHash,
+        publicKey: process.env.DRAND_PUBLIC_KEY ?? defaultDrandPublicKey
+    },
 
     logLevel: process.env.LOG_LEVEL ?? 'info',
     isProduction: process.env.NODE_ENV === 'production'

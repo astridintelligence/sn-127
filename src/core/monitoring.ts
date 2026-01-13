@@ -82,8 +82,6 @@ const pollResourceUsage = async () => {
         capacityState.cpu = Number((cpuUsage * 100).toFixed(2));
         capacityState.memory = Number((memoryUsage * 100).toFixed(2));
         capacityState.runningTasks = runningTaskCount;
-
-        logger.trace({ capacity: capacityState }, 'updated validator resource metrics');
     } catch (err) {
         logger.warn({ err }, 'failed to update resource metrics');
     }

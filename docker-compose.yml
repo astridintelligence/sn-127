@@ -2,7 +2,7 @@ services:
   validator:
     build:
       context: .
-    image: astrid-intelligence/validator
+    image: astridintelligence/astrid-validator
     environment:
       NODE_ENV: development
       REDIS_URL: redis://redis:6379

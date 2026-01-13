@@ -1,9 +1,9 @@
 import { startAdminServer } from './admin/server';
 import config from './config/env';
 import logger from './config/logger';
-import { startBittensorWeightService } from './core/bittensor-weights';
 import { startHeartbeatLoop } from './core/heartbeat';
 import { startMonitoringService, stopMonitoringService } from './core/monitoring';
+import { startSetWeightsService } from './core/submit_weights';
 import { startTaskPoller } from './core/task-poller';
 import { registerValidator } from './core/validator-service';
 import { setValidatorId } from './core/validator-state';
@@ -29,7 +29,7 @@ const bootstrap = async () => {
     startMonitoringService();
 
     const heartbeatTimer = await startHeartbeatLoop(identity);
-    const weightTimer = await startBittensorWeightService(identity);
+    const weightTimer = await startSetWeightsService();
     const taskPoller = startTaskPoller();
     const adminServer = startAdminServer();
 
