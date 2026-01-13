@@ -1,4 +1,5 @@
 import os from 'node:os';
+import si from 'systeminformation';
 
 import config from '../config/env';
 import logger from '../config/logger';
@@ -61,22 +62,22 @@ const calculateCpuUsage = (): number => {
     return Math.max(0, Math.min(usage, 1));
 };
 
-const updateMemoryUsage = (): number => {
-    const total = os.totalmem();
-    const free = os.freemem();
-
-    if (total <= 0) {
+const updateMemoryUsage = async (): Promise<number> => {
+    const memData = await si.mem();
+    if (memData.total === 0) {
         return 0;
     }
 
-    const used = total - free;
-    return Math.max(0, Math.min(used / total, 1));
+    const usedMemory = memData.total - memData.available;
+    const usage = usedMemory / memData.total;
+
+    return Math.max(0, Math.min(usage, 1));
 };
 
-const pollResourceUsage = () => {
+const pollResourceUsage = async () => {
     try {
         const cpuUsage = calculateCpuUsage();
-        const memoryUsage = updateMemoryUsage();
+        const memoryUsage = await updateMemoryUsage();
 
         capacityState.cpu = Number((cpuUsage * 100).toFixed(2));
         capacityState.memory = Number((memoryUsage * 100).toFixed(2));
@@ -88,13 +89,13 @@ const pollResourceUsage = () => {
     }
 };
 
-export const startMonitoringService = (): NodeJS.Timeout => {
+export const startMonitoringService = async (): Promise<NodeJS.Timeout> => {
     if (monitorTimer) {
         return monitorTimer;
     }
 
     cpuSample = sampleCpu();
-    pollResourceUsage();
+    await pollResourceUsage();
 
     const interval = Math.max(1_000, Math.floor(config.heartbeatIntervalMs / 3));
     monitorTimer = setInterval(pollResourceUsage, interval);

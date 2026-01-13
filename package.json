@@ -25,6 +25,7 @@
         "pino": "^9.4.0",
         "pino-pretty": "^13.1.2",
         "sigmaarena-vm": "^1.0.26",
+        "systeminformation": "^5.30.3",
         "tar-stream": "^3.1.7"
     },
     "devDependencies": {

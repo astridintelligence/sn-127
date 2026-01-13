@@ -64,6 +64,9 @@ MAX_CONCURRENT_TASKS=5
 # Docker socket path
 DOCKER_SOCKET=/var/run/docker.sock
 
+# Validator display name
+VALIDATOR_DISPLAY_NAME=Validator Name
+
 # Admin dashboard port
 ADMIN_PORT=3000
 

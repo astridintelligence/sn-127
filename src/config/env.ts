@@ -27,6 +27,8 @@ export interface ValidatorConfig {
     readonly dockerSocketPath: string;
     readonly adminPort: number;
     readonly bittensor: BittensorConfig;
+    readonly displayName: string;
+    readonly iconUrl: string;
 
     readonly logLevel: string;
     readonly isProduction: boolean;
@@ -94,6 +96,8 @@ const config: ValidatorConfig = {
         weightsUrl: configuredWeightsUrl.length > 0 ? configuredWeightsUrl : null,
         staticWeights: configuredWeights
     },
+    displayName: process.env.VALIDATOR_DISPLAY_NAME ?? 'Unset',
+    iconUrl: process.env.VALIDATOR_ICON_URL ?? '',
 
     logLevel: process.env.LOG_LEVEL ?? 'info',
     isProduction: process.env.NODE_ENV === 'production'

@@ -25,5 +25,5 @@ RUN npm ci --omit=dev --no-audit --no-fund
 # Add compiled output
 COPY --from=build /app/dist ./dist
 
-ENV APP_VERSION=0.1.0
+ENV APP_VERSION=0.1.1
 CMD ["node", "dist/index.js"]
