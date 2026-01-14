@@ -1,5 +1,3 @@
-import axios from 'axios';
-
 import type { BittensorWeightTarget } from '../config/env';
 import config from '../config/env';
 import logger from '../config/logger';
@@ -64,13 +62,29 @@ const parseRemoteWeights = (payload: unknown): BittensorWeightTarget[] => {
         .filter((target): target is BittensorWeightTarget => target !== null);
 };
 
-const fetchTargets = async (): Promise<BittensorWeightTarget[]> => {
+export const fetchTargets = async (): Promise<BittensorWeightTarget[]> => {
     if (config.bittensor.weightsUrl) {
         try {
-            const { data } = await axios.get(config.bittensor.weightsUrl, {
-                timeout: 5_000
-            });
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 5_000);
 
+            const response = await fetch(config.bittensor.weightsUrl, {
+                signal: controller.signal
+            });
+            clearTimeout(timeout);
+
+            if (!response.ok) {
+                logger.warn(
+                    {
+                        url: config.bittensor.weightsUrl,
+                        status: response.status
+                    },
+                    'received non-OK response from remote weights source'
+                );
+                return [];
+            }
+
+            const data = await response.json();
             const parsed = parseRemoteWeights(data);
             if (parsed.length > 0) {
                 return parsed;
@@ -85,10 +99,6 @@ const fetchTargets = async (): Promise<BittensorWeightTarget[]> => {
         } catch (err) {
             logger.error({ err }, 'failed to fetch bittensor weights from remote');
         }
-    }
-
-    if (config.bittensor.staticWeights.length > 0) {
-        return [...config.bittensor.staticWeights];
     }
 
     return [];

@@ -2,8 +2,6 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const astridMinerUid = 164;
-
 const defaultDrandApiBaseUrl = 'https://api.drand.sh';
 const defaultDrandChainHash = '52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971';
 const defaultDrandPublicKey =
@@ -21,7 +19,6 @@ export interface BittensorConfig {
     readonly versionKey: number;
     readonly weightIntervalMs: number;
     readonly weightsUrl: string | null;
-    readonly staticWeights: readonly BittensorWeightTarget[];
 }
 
 export interface DrandConfig {
@@ -63,39 +60,12 @@ const bool = (value: string | undefined, fallback: boolean): boolean => {
     return ['1', 'true', 'yes', 'on'].includes(normalized);
 };
 
-const parseWeightTargets = (raw: string | undefined): readonly BittensorWeightTarget[] => {
-    if (!raw) {
-        return [];
-    }
-
-    return raw
-        .split(',')
-        .map((entry) => entry.trim())
-        .filter((entry) => entry.length > 0)
-        .map((entry) => {
-            const [uidRaw, weightRaw] = entry.split(':').map((part) => part.trim());
-            const uid = Number(uidRaw);
-            const weight = Number(weightRaw);
-
-            if (!Number.isInteger(uid) || uid < 0) {
-                return null;
-            }
-
-            if (!Number.isFinite(weight) || weight < 0) {
-                return null;
-            }
-
-            return { uid, weight };
-        })
-        .filter((target): target is BittensorWeightTarget => target !== null);
-};
-
-const configuredWeights = parseWeightTargets(process.env.BITTENSOR_WEIGHT_TARGETS ?? `${astridMinerUid}:1`);
-const configuredWeightsUrl = process.env.BITTENSOR_WEIGHTS_URL ?? '';
+const configuredApiUrl = process.env.API_URL ?? 'http://localhost:3000/v1';
+const configuredWeightsUrl = `${configuredApiUrl}/bittensor/weights`;
 const configuredEndpoint = process.env.BITTENSOR_WS_ENDPOINT ?? 'wss://entrypoint-finney.opentensor.ai:443';
 
 const config: ValidatorConfig = {
-    apiUrl: process.env.API_URL ?? 'http://localhost:3000/v1',
+    apiUrl: configuredApiUrl,
     redisUrl: process.env.REDIS_URL ?? 'redis://localhost:6379',
     validatorMnemonic: process.env.VALIDATOR_MNEMONIC ?? '',
     validatorSs58Address: process.env.VALIDATOR_SS58_ADDRESS ?? '',
@@ -109,9 +79,8 @@ const config: ValidatorConfig = {
         wsEndpoint: configuredEndpoint,
         netuid: int(process.env.BITTENSOR_NETUID, 1),
         versionKey: Number(process.env.BITTENSOR_VERSION_KEY ?? 0),
-        weightIntervalMs: int(process.env.BITTENSOR_WEIGHT_INTERVAL_MS, 3600000),
-        weightsUrl: configuredWeightsUrl.length > 0 ? configuredWeightsUrl : null,
-        staticWeights: configuredWeights
+        weightIntervalMs: int(process.env.BITTENSOR_WEIGHT_INTERVAL_MS, 60000),
+        weightsUrl: configuredWeightsUrl.length > 0 ? configuredWeightsUrl : null
     },
     displayName: process.env.VALIDATOR_DISPLAY_NAME ?? 'Unset',
     iconUrl: process.env.VALIDATOR_ICON_URL ?? '',

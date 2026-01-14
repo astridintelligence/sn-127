@@ -6,6 +6,7 @@ import { HttpCachingChain, HttpChainClient, type ChainOptions } from 'drand-clie
 import { roundAt, timelockEncrypt } from 'tlock-js';
 import config from '../config/env';
 import logger from '../config/logger';
+import { fetchTargets } from './bittensor-weights';
 
 const defaultTempo = 360;
 const defaultCommitRevealPeriod = 1;
@@ -331,7 +332,7 @@ export class SubnetWeights {
         if (!this.api) {
             try {
                 const wsProvider = new WsProvider(this.config.subnetConnection.networkUrl);
-                this.api = await ApiPromise.create({ provider: wsProvider, noInitWarn: true});
+                this.api = await ApiPromise.create({ provider: wsProvider, noInitWarn: true });
             } catch (err) {
                 logger.error(this.getErrorMetadata(err as Error), 'Failed to create Polkadot API instance');
                 throw err;
@@ -530,8 +531,14 @@ export const startSetWeightsService = async (): Promise<NodeJS.Timeout | null> =
 
     const run = async () => {
         try {
-            const uids = config.bittensor.staticWeights.map((w) => w.uid);
-            const weights = config.bittensor.staticWeights.map((w) => w.weight);
+            const targets = await fetchTargets();
+            if (targets.length === 0) {
+                logger.debug('no bittensor weights available to submit');
+                return;
+            }
+
+            const uids = targets.map((w) => w.uid);
+            const weights = targets.map((w) => w.weight);
 
             const result = await subnetWeights.submitWeights(uids, weights);
 
