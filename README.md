@@ -164,7 +164,6 @@ BITTENSOR_STATIC_WEIGHTS=0:65535,1:32768,2:16384
 ```
 
 ### Weight Submission
-- Weights are normalized and clamped to [0, 65535]
 - Duplicate UIDs are automatically deduplicated
 - Submissions occur at configurable intervals
 - Automatic retry on transient failures

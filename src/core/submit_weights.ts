@@ -118,8 +118,6 @@ export class SubnetWeights {
         try {
             const subnetInfo = await this.getSubnetInfo();
 
-            const normalizedWeights = this.normalizeWeights(weights);
-
             // Choose method based on commit-reveal setting
             if (subnetInfo.commitRevealEnabled) {
                 const revealAfterBlocks = subnetInfo.commitRevealPeriod * subnetInfo.tempo;
@@ -133,7 +131,7 @@ export class SubnetWeights {
                     targetRound: actualTargetRound,
                     blockNumber,
                     extrinsicIndex
-                } = await this.commitCRWeights(uids, normalizedWeights, salt, targetRound);
+                } = await this.commitCRWeights(uids, weights, salt, targetRound);
 
                 return {
                     commitHash: txHash,
@@ -471,18 +469,6 @@ export class SubnetWeights {
         }
 
         throw new Error(`invalid validator secret seed length: ${keyBytes.length} bytes`);
-    }
-
-    private normalizeWeights(weights: number[]): number[] {
-        const maxWeight = 1;
-        const totalWeight = weights.reduce((sum, w) => sum + w, 0);
-        const normalizedWeights = weights.map((weight) => Math.floor((weight / totalWeight) * maxWeight));
-
-        logger.debug('Weight Normalization:');
-        logger.debug(`  - Original: [${weights.join(', ')}]`);
-        logger.debug(`  - Normalized: [${normalizedWeights.join(', ')}]`);
-
-        return normalizedWeights;
     }
 
     getErrorMetadata(err: Error): Record<string, any> {

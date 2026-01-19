@@ -4,14 +4,6 @@ import logger from '../config/logger';
 import { connectPolkadot } from '../polkadot/connection';
 import type { ValidatorIdentity } from '../utils/identity';
 
-const clampWeight = (value: number): number => {
-    if (!Number.isFinite(value)) {
-        return 0;
-    }
-
-    return Math.min(65_535, Math.max(0, Math.round(value)));
-};
-
 const dedupeTargets = (targets: readonly BittensorWeightTarget[]): BittensorWeightTarget[] => {
     const seen = new Map<number, number>();
 
@@ -20,8 +12,7 @@ const dedupeTargets = (targets: readonly BittensorWeightTarget[]): BittensorWeig
             return;
         }
 
-        const normalizedWeight = clampWeight(weight);
-        seen.set(uid, normalizedWeight);
+        seen.set(uid, weight);
     });
 
     return Array.from(seen.entries())
