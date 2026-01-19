@@ -1,6 +1,9 @@
 import { ApiPromise, WsProvider } from '@polkadot/api';
 import { Keyring } from '@polkadot/keyring';
 import type { KeyringPair } from '@polkadot/keyring/cjs/types';
+import { hexToU8a, isHex, u8aToHex } from '@polkadot/util';
+import { cryptoWaitReady, ed25519PairFromSecret, ed25519PairFromSeed } from '@polkadot/util-crypto';
+import { getPublicKey } from '@scure/sr25519';
 import crypto from 'crypto';
 import { HttpCachingChain, HttpChainClient, type ChainOptions } from 'drand-client';
 import { roundAt, timelockEncrypt } from 'tlock-js';
@@ -20,6 +23,7 @@ export interface SubnetConnectionConfig {
     networkUrl: string;
     subnetId: number;
     ss58Address: string;
+    ss58Format?: number;
     secretPhrase: string;
 }
 
@@ -126,19 +130,10 @@ export class SubnetWeights {
 
                 const {
                     txHash,
-                    encryptedCommit,
                     targetRound: actualTargetRound,
                     blockNumber,
                     extrinsicIndex
                 } = await this.commitCRWeights(uids, normalizedWeights, salt, targetRound);
-
-                logger.debug('Weights committed successfully (CRv3).');
-                logger.debug('Commit Details:');
-                logger.debug(`  - Transaction Hash: ${txHash}`);
-                logger.debug(`  - Target Drand Round: ${actualTargetRound}`);
-                logger.debug(`  - Encrypted Data Size: ${encryptedCommit.length} bytes`);
-
-                logger.debug(`The blockchain will automatically decrypt and reveal weights when Drand round ${actualTargetRound} is reached.`);
 
                 return {
                     commitHash: txHash,
@@ -167,21 +162,18 @@ export class SubnetWeights {
 
     private async commitCRWeights(uids: number[], weights: number[], salt: Uint8Array, targetRound: number): Promise<CommitWeightsResult> {
         const api = await this.getApi();
-        const account = this.getAccount();
+        const account = await this.getAccount();
         const subnetId = this.config.subnetConnection.subnetId;
 
         const encryptedCommit = await this.createTimelockCommit(uids, weights, salt, targetRound);
 
         const extrinsics = Object.keys(api.tx.subtensorModule);
-        logger.debug(`Available extrinsics: ${extrinsics.filter((e) => e.toLowerCase().includes('commit')).join(', ')}`);
 
         let commitTx;
 
         if (api.tx.subtensorModule.commitCrv3Weights) {
-            logger.debug('Using: commitCrv3Weights (CRv3)');
             commitTx = api.tx.subtensorModule.commitCrv3Weights(subnetId, Array.from(encryptedCommit), targetRound);
         } else if (api.tx.subtensorModule.commitTimelockedWeights) {
-            logger.debug('Using: commitTimelockedWeights (CRv4)');
             const commitRevealVersion = 4;
             commitTx = api.tx.subtensorModule.commitTimelockedWeights(subnetId, Array.from(encryptedCommit), targetRound, commitRevealVersion);
         } else {
@@ -243,8 +235,6 @@ export class SubnetWeights {
     private async createTimelockCommit(uids: number[], weights: number[], salt: Uint8Array, targetRound: number): Promise<string> {
         const versionKey = 0;
 
-        logger.debug('Creating Drand timelock encrypted commit ...');
-
         const data = Buffer.concat([
             Buffer.from(new Uint16Array(uids).buffer),
             Buffer.from(new Uint16Array(weights).buffer),
@@ -256,25 +246,21 @@ export class SubnetWeights {
 
         const cipherText = await timelockEncrypt(targetRound, data, client);
 
-        logger.debug('Timelock encryption complete');
-
         return cipherText;
     }
 
     private async setWeightsStandard(uids: any[], weights: any[]): Promise<string> {
         const api = await this.getApi();
-        const account = this.getAccount();
+        const account = await this.getAccount();
         const subnetId = this.config.subnetConnection.subnetId;
         const versionKey = 0;
 
         const setWeightsTx = api.tx.subtensorModule.setWeights(subnetId, uids, weights, versionKey);
 
-        logger.debug('Submitting standard set_weights transaction ...');
-
         return new Promise((resolve, reject) => {
             setWeightsTx
-                .signAndSend(account, (result: { status?: any; events?: any; dispatchError?: any }) => {
-                    const { status, events, dispatchError } = result;
+                .signAndSend(account, (result: { status?: any; dispatchError?: any }) => {
+                    const { status, dispatchError } = result;
                     if (status.isInBlock) {
                         logger.debug(`Transaction included in block: ${status.asInBlock.toHex()}`);
                     }
@@ -302,9 +288,6 @@ export class SubnetWeights {
         const client = this.getDrandClient();
 
         const chainInfo = await client.chain().info();
-
-        logger.debug(`Drand Genesis Time: ${new Date(chainInfo.genesis_time * 1000).toISOString()}`);
-        logger.debug(`Drand Period: ${chainInfo.period} seconds`);
 
         const currentTimeMs = Date.now();
         const targetTimeMs = currentTimeMs + blocksInFuture * blockTime * 1000;
@@ -370,16 +353,32 @@ export class SubnetWeights {
         return this.subnetInfo;
     }
 
-    private getAccount(): KeyringPair {
+    private async getAccount(): Promise<KeyringPair> {
         if (this.account) {
             return this.account;
         }
 
-        const keyring = new Keyring({ type: 'sr25519' });
-        const account = keyring.addFromUri(this.config.subnetConnection.secretPhrase);
+        const ready = await cryptoWaitReady();
+        if (!ready) {
+            throw new Error('failed to initialize crypto libraries for polkadot');
+        }
 
-        if (account.address !== this.config.subnetConnection.ss58Address) {
-            throw new Error('Private key does not match the provided SS58 address');
+        const keyring = new Keyring({
+            type: 'sr25519',
+            ss58Format: this.config.subnetConnection.ss58Format
+        });
+        const secretPhrase = this.config.subnetConnection.secretPhrase.trim();
+        const hexSecret = this.normalizeHexSecret(secretPhrase);
+        const account = hexSecret
+            ? this.addAccountFromHex(keyring, hexSecret, this.config.subnetConnection.ss58Address)
+            : keyring.addFromUri(secretPhrase);
+
+        if (!this.matchesExpectedAccount(account, this.config.subnetConnection.ss58Address)) {
+            logger.warn(
+                'The provided validator secret does not match the expected SS58 address. ' +
+                    `Expected Address: ${this.config.subnetConnection.ss58Address || 'N/A'}. ` +
+                    `Derived Address: ${account.address}, Derived Public Key: ${u8aToHex(account.publicKey)}`
+            );
         }
 
         logger.debug(`Using account: ${account.address}`);
@@ -387,6 +386,91 @@ export class SubnetWeights {
         this.account = account;
 
         return this.account;
+    }
+
+    private normalizeHexSecret(secretPhrase: string): string | null {
+        if (isHex(secretPhrase)) {
+            return secretPhrase;
+        }
+
+        if (secretPhrase.length % 2 === 0 && /^[0-9a-fA-F]+$/.test(secretPhrase)) {
+            return `0x${secretPhrase}`;
+        }
+
+        return null;
+    }
+
+    private normalizeHex(value?: string): string | null {
+        const trimmed = value?.trim() ?? '';
+        if (!trimmed) {
+            return null;
+        }
+
+        if (isHex(trimmed)) {
+            return trimmed.toLowerCase();
+        }
+
+        if (trimmed.length % 2 === 0 && /^[0-9a-fA-F]+$/.test(trimmed)) {
+            return `0x${trimmed}`.toLowerCase();
+        }
+
+        return null;
+    }
+
+    private matchesExpectedAccount(account: KeyringPair, expectedAddress?: string): boolean {
+        const normalizedExpectedAddress = expectedAddress?.trim() ?? '';
+        if (normalizedExpectedAddress && account.address !== normalizedExpectedAddress) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private addAccountFromHex(keyring: Keyring, secretPhrase: string, expectedAddress?: string): KeyringPair {
+        const keyBytes = hexToU8a(secretPhrase);
+        const ss58Format = this.config.subnetConnection.ss58Format;
+        const candidates: KeyringPair[] = [];
+
+        if (keyBytes.length === 32) {
+            candidates.push(keyring.addFromSeed(keyBytes));
+            const edKeyring = new Keyring({ type: 'ed25519', ss58Format });
+            candidates.push(edKeyring.addFromPair(ed25519PairFromSeed(keyBytes)));
+        }
+
+        if (keyBytes.length === 64) {
+            candidates.push(
+                keyring.addFromPair({
+                    publicKey: getPublicKey(keyBytes),
+                    secretKey: keyBytes
+                })
+            );
+            candidates.push(keyring.addFromSeed(keyBytes.slice(0, 32)));
+
+            const edKeyring = new Keyring({ type: 'ed25519', ss58Format });
+            candidates.push(edKeyring.addFromPair(ed25519PairFromSecret(keyBytes)));
+            candidates.push(edKeyring.addFromPair(ed25519PairFromSeed(keyBytes.slice(0, 32))));
+        }
+
+        if (keyBytes.length === 96) {
+            candidates.push(
+                keyring.addFromPair({
+                    publicKey: keyBytes.slice(64, 96),
+                    secretKey: keyBytes.slice(0, 64)
+                })
+            );
+        }
+
+        for (const candidate of candidates) {
+            if (this.matchesExpectedAccount(candidate, expectedAddress)) {
+                return candidate;
+            }
+        }
+
+        if (candidates.length > 0) {
+            return candidates[0];
+        }
+
+        throw new Error(`invalid validator secret seed length: ${keyBytes.length} bytes`);
     }
 
     private normalizeWeights(weights: number[]): number[] {
@@ -418,21 +502,6 @@ export class SubnetWeights {
         try {
             const scheduleParams = await this.getSubnetScheduleParams();
             const currentBlock = await this.getCurrentBlock();
-
-            logger.debug('Current State:');
-            logger.debug(`  - Current Block: ${currentBlock}`);
-            logger.debug(`  - Last Commit Block: ${this.lastCommitBlock || 'None'}`);
-            logger.debug(`  - Blocks Since Last Commit: ${this.lastCommitBlock ? currentBlock - this.lastCommitBlock : 'N/A'}`);
-
-            logger.debug('Subnet Configuration:');
-            logger.debug(`  - Tempo: ${scheduleParams.tempo} blocks (~${Math.floor((scheduleParams.tempo * 12) / 60)} min)`);
-            logger.debug(
-                `  - Weights Rate Limit: ${scheduleParams.weightsRateLimit} blocks (~${Math.floor((scheduleParams.weightsRateLimit * 12) / 60)} min)`
-            );
-            logger.debug(
-                `  - Activity Cutoff: ${scheduleParams.activityCutoff} blocks (~${Math.floor((scheduleParams.activityCutoff * 12) / 60)} min)`
-            );
-            logger.debug(`  - Commit-Reveal: ${scheduleParams.commitRevealEnabled ? 'Enabled' : 'Disabled'}`);
 
             // Calculate if we can commit
             const blocksSinceLastCommit = this.lastCommitBlock ? currentBlock - this.lastCommitBlock : Infinity;
@@ -508,6 +577,12 @@ export const startSetWeightsService = async (): Promise<NodeJS.Timeout | null> =
         return null;
     }
 
+    const validatorSecret = config.validatorSecretSeed.trim() || config.validatorMnemonic.trim();
+    if (!validatorSecret) {
+        logger.warn('validator mnemonic or secret seed not provided; bittensor weight service disabled');
+        return null;
+    }
+
     logger.info(
         {
             endpoint: config.bittensor.wsEndpoint,
@@ -522,7 +597,8 @@ export const startSetWeightsService = async (): Promise<NodeJS.Timeout | null> =
             networkUrl: config.bittensor.wsEndpoint,
             subnetId: config.bittensor.netuid,
             ss58Address: config.validatorSs58Address,
-            secretPhrase: config.validatorMnemonic
+            ss58Format: config.validatorSs58Format,
+            secretPhrase: validatorSecret
         },
         drand: config.drandConfig
     };

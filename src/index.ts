@@ -12,12 +12,17 @@ import { loadIdentity } from './utils/identity';
 
 const bootstrap = async () => {
     logger.info('Starting validator daemon');
-    logger.debug({ config }, 'validator configuration');
 
-    const identity = await loadIdentity(config.validatorMnemonic, {
-        ss58Format: config.validatorSs58Format,
-        walletName: 'validator-hotkey'
-    });
+    const identity = await loadIdentity(
+        {
+            mnemonic: config.validatorMnemonic,
+            secretSeed: config.validatorSecretSeed
+        },
+        {
+            ss58Format: config.validatorSs58Format,
+            walletName: 'validator-hotkey'
+        }
+    );
 
     if (!identity) {
         throw new Error('Failed to load validator identity');

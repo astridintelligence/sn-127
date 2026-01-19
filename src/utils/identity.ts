@@ -2,7 +2,7 @@ import { KeyringPair } from '@polkadot/keyring/types';
 import { u8aToHex } from '@polkadot/util';
 
 import logger from '../config/logger';
-import { initWalletFromMnemonic } from '../polkadot/wallet';
+import { initWalletFromMnemonic, initWalletFromSecretSeed } from '../polkadot/wallet';
 
 export interface ValidatorIdentity {
     readonly address: string;
@@ -16,17 +16,30 @@ export interface LoadIdentityOptions {
     readonly walletName?: string;
 }
 
-export const loadIdentity = async (mnemonic: string, options: LoadIdentityOptions = {}): Promise<ValidatorIdentity | null> => {
-    if (!mnemonic) {
-        logger.warn('validator mnemonic not provided');
+export interface ValidatorCredentials {
+    readonly mnemonic?: string;
+    readonly secretSeed?: string;
+}
+
+export const loadIdentity = async (credentials: ValidatorCredentials, options: LoadIdentityOptions = {}): Promise<ValidatorIdentity | null> => {
+    const mnemonic = credentials.mnemonic?.trim() ?? '';
+    const secretSeed = credentials.secretSeed?.trim() ?? '';
+
+    if (!mnemonic && !secretSeed) {
+        logger.warn('validator mnemonic or secret seed not provided');
         return null;
     }
 
     try {
-        const pair = await initWalletFromMnemonic(mnemonic, {
-            ss58Format: options.ss58Format,
-            name: options.walletName
-        });
+        const pair = mnemonic
+            ? await initWalletFromMnemonic(mnemonic, {
+                  ss58Format: options.ss58Format,
+                  name: options.walletName
+              })
+            : await initWalletFromSecretSeed(secretSeed, {
+                  ss58Format: options.ss58Format,
+                  name: options.walletName
+              });
 
         const identity: ValidatorIdentity = {
             address: pair.address,

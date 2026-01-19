@@ -52,8 +52,9 @@ API_URL=https://api.astrid.global
 # Redis connection
 REDIS_URL=redis://localhost:6379
 
-# Validator identity (Polkadot/Substrate mnemonic)
+# Validator identity (Polkadot/Substrate mnemonic or secret seed)
 VALIDATOR_MNEMONIC="your twelve word seed phrase goes here"
+VALIDATOR_SECRET_SEED="0x..."
 
 # Heartbeat interval (ms)
 HEARTBEAT_INTERVAL_MS=10000
@@ -222,7 +223,7 @@ npm run build
 
 ## Security Considerations
 
-- **Mnemonic Storage**: Never commit your validator mnemonic to version control
+- **Credential Storage**: Never commit your validator mnemonic or secret seed to version control
 - **Docker Socket**: The validator requires access to `/var/run/docker.sock` for task execution
 - **Network Isolation**: Consider running in isolated network environments
 - **Resource Limits**: Configure `MAX_CONCURRENT_TASKS` based on available system resources
@@ -232,7 +233,7 @@ npm run build
 
 ### Validator fails to register
 - Verify `API_URL` is correct and accessible
-- Check that `VALIDATOR_MNEMONIC` is valid
+- Check that `VALIDATOR_MNEMONIC` or `VALIDATOR_SECRET_SEED` is valid
 - Ensure network connectivity to the coordinator
 
 ### Tasks not executing

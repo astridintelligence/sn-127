@@ -31,6 +31,7 @@ export interface ValidatorConfig {
     readonly apiUrl: string;
     readonly redisUrl: string;
     readonly validatorMnemonic: string;
+    readonly validatorSecretSeed: string;
     readonly validatorSs58Address: string;
     readonly validatorSs58Format: number;
     readonly heartbeatIntervalMs: number;
@@ -68,6 +69,7 @@ const config: ValidatorConfig = {
     apiUrl: configuredApiUrl,
     redisUrl: process.env.REDIS_URL ?? 'redis://localhost:6379',
     validatorMnemonic: process.env.VALIDATOR_MNEMONIC ?? '',
+    validatorSecretSeed: process.env.VALIDATOR_SECRET_SEED ?? '',
     validatorSs58Address: process.env.VALIDATOR_SS58_ADDRESS ?? '',
     validatorSs58Format: int(process.env.VALIDATOR_SS58_FORMAT, 42),
     heartbeatIntervalMs: int(process.env.HEARTBEAT_INTERVAL_MS, 15000),
