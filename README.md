@@ -47,7 +47,7 @@ Create a `.env` file based on `.env.example`:
 NODE_ENV=production
 
 # Astrid API endpoint
-API_URL=https://api.astrid.global
+API_URL=https://api.astrid.global/v1
 
 # Redis connection
 REDIS_URL=redis://localhost:6379
