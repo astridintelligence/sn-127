@@ -80,7 +80,6 @@ export class SubnetWeights {
     private chainOptions: ChainOptions;
 
     private api: ApiPromise | null = null;
-    private subnetInfo: SubnetInfo | null = null;
     private account: KeyringPair | null = null;
 
     private lastCommitBlock: number = 0;
@@ -324,10 +323,6 @@ export class SubnetWeights {
     }
 
     private async getSubnetInfo(): Promise<SubnetInfo> {
-        if (this.subnetInfo) {
-            return this.subnetInfo;
-        }
-
         const api = await this.getApi();
 
         const subnetId = this.config.subnetConnection.subnetId;
@@ -346,9 +341,7 @@ export class SubnetWeights {
         logger.debug(`  - Commit-Reveal Period: ${subnetInfo.commitRevealPeriod} tempos`);
         logger.debug(`  - Tempo: ${subnetInfo.tempo} blocks`);
 
-        this.subnetInfo = subnetInfo;
-
-        return this.subnetInfo;
+        return subnetInfo;
     }
 
     private async getAccount(): Promise<KeyringPair> {
