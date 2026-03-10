@@ -7,8 +7,10 @@ import { getPublicKey } from '@scure/sr25519';
 import crypto from 'crypto';
 import { HttpCachingChain, HttpChainClient, type ChainOptions } from 'drand-client';
 import { roundAt, timelockEncrypt } from 'tlock-js';
-import config from '../config/env';
+import config, { BittensorWeightTarget } from '../config/env';
 import logger from '../config/logger';
+import { connectPolkadot } from '../polkadot/connection';
+import { computeArenaWeights } from './arena';
 import { fetchTargets } from './bittensor-weights';
 
 const defaultTempo = 360;
@@ -586,14 +588,32 @@ export const startSetWeightsService = async (): Promise<NodeJS.Timeout | null> =
 
     const run = async () => {
         try {
-            const targets = await fetchTargets();
-            if (targets.length === 0) {
+            const vaultTargets = await fetchTargets();
+            if (vaultTargets.length === 0) {
                 logger.debug('no bittensor weights available to submit');
                 return;
             }
 
+            // Attempt to blend in arena miner weights if configured
+            let targets: readonly BittensorWeightTarget[] = vaultTargets;
+            if (config.arenaApiUrl) {
+                try {
+                    const api = await connectPolkadot(config.bittensor.wsEndpoint);
+                    const blended = await computeArenaWeights(api, config.bittensor.netuid, config.arenaApiUrl, vaultTargets);
+                    if (blended) {
+                        targets = blended;
+                    }
+                } catch (err) {
+                    logger.error({ err }, 'arena weight computation failed — falling back to vault-only weights');
+                }
+            }
+
             const uids = targets.map((w) => w.uid);
             const weights = targets.map((w) => w.weight);
+
+            logger.info(
+                `Weights ready to submit: ${uids.length} targets (Uids: [${uids.join(', ')}], Weights: [${weights.join(', ')}])${subnetWeights ? '' : '.'}`
+            );
 
             const result = await subnetWeights.submitWeights(uids, weights);
 

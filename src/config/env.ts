@@ -7,6 +7,8 @@ const defaultDrandChainHash = '52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f66179
 const defaultDrandPublicKey =
     '83cf0f2896adee7eb8b5f01fcad3912212c437e0073e911fb90022d3e760183c8c4b450b6a0a6c3ac6a5776a2d1064510d1fec758c921cc22b0e17e63aaf4bcb5ed66304de9cf809bd274ca73bab4af5a6e9c76a4bc09e76eae8991ef5ece45a';
 
+const defaultArenaApiUrl = 'https://arena-api.astrid.global';
+
 export interface BittensorWeightTarget {
     readonly uid: number;
     readonly weight: number;
@@ -29,6 +31,7 @@ export interface DrandConfig {
 
 export interface ValidatorConfig {
     readonly apiUrl: string;
+    readonly arenaApiUrl: string;
     readonly redisUrl: string;
     readonly validatorMnemonic: string;
     readonly validatorSecretSeed: string;
@@ -61,12 +64,13 @@ const bool = (value: string | undefined, fallback: boolean): boolean => {
     return ['1', 'true', 'yes', 'on'].includes(normalized);
 };
 
-const configuredApiUrl = process.env.API_URL ?? 'http://localhost:3000/v1';
+const configuredApiUrl = process.env.API_URL ?? 'https://api.astrid.global/v1';
 const configuredWeightsUrl = `${configuredApiUrl}/bittensor/weights`;
 const configuredEndpoint = process.env.BITTENSOR_WS_ENDPOINT ?? 'wss://entrypoint-finney.opentensor.ai:443';
 
 const config: ValidatorConfig = {
     apiUrl: configuredApiUrl,
+    arenaApiUrl: process.env.ARENA_API_URL ?? defaultArenaApiUrl,
     redisUrl: process.env.REDIS_URL ?? 'redis://localhost:6379',
     validatorMnemonic: process.env.VALIDATOR_MNEMONIC ?? '',
     validatorSecretSeed: process.env.VALIDATOR_SECRET_SEED ?? '',

@@ -54,8 +54,6 @@ export const startHeartbeatLoop = async (identity: ValidatorIdentity) => {
             await axios.post(`${config.apiUrl}/validators/heartbeat`, heartbeat, {
                 timeout: 5_000
             });
-
-            logger.debug({ validatorId: heartbeat.validatorId }, 'heartbeat sent');
         } catch (err) {
             if (axios.isAxiosError(err) && err.response?.status === 403 && !retrying) {
                 logger.warn({ status: err.response.status }, 'heartbeat rejected with 403; attempting validator registration');
