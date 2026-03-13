@@ -29,12 +29,11 @@ The miner must have executed at least one trade during the competition period.
 
 ### Rule 2 — Execution Runs Correlated With Trades
 
-For **every** trade the miner made, there must be at least one **execution run** (LLM agent decision cycle) submitted within **±2 hours** of that trade's timestamp.
+For every trade the miner made **in the last 12 hours**, there must be at least one **execution run** (LLM agent decision cycle) submitted within **±2 hours** of that trade's timestamp. Trades older than 12 hours are forgiven, so a past miss does not permanently disqualify a miner — as long as recent trades are covered, the miner remains eligible.
 
 - This rule ensures miners are running their agents actively and not front-running or submitting stale data.
-- A miner who has trades but whose agent was not running at trade time is **ineligible**.
 
-> **Example:** A miner makes 3 trades. Trades at 10:00 and 14:00 each have a nearby execution run. The trade at 22:00 has no execution run between 20:00 and 24:00. → The miner is **ineligible** because one trade fails the check.
+> **Example:** A miner makes 3 trades. Trades at 10:00 and 14:00 each have a nearby execution run. The trade at 22:00 has no execution run between 20:00 and 24:00. → The miner is **ineligible** because one recent trade fails the check.
 
 ---
 
@@ -90,7 +89,7 @@ To maximize your chance of earning emissions:
 | Scenario                               | Outcome                                                             |
 | -------------------------------------- | ------------------------------------------------------------------- |
 | No active competition                  | Arena emissions ignored; vault-only weights applied                 |
-| Fewer than 3 eligible miners           | Only the eligible miners receive weight (still 60/30/10 among them) |
+| Fewer than 3 eligible miners           | Only the eligible miners receive weight (1 miner → 100%; 2 miners → 70%/30%) |
 | Miner coldkey not found in metagraph   | Miner skipped even if ranked                                        |
 | Miner has trades but no execution runs | Ineligible (Rule 2 fails)                                           |
 
@@ -105,12 +104,12 @@ The ranking algorithm is implemented in `src/core/arena/`:
 | `api.ts`         | Fetches data from the trading platform public API             |
 | `cache.ts`       | Incremental in-memory cache; fetches only new data each cycle |
 | `eligibility.ts` | Applies Rules 1 and 2 per participant                         |
-| `ranking.ts`     | Sorts eligible miners and assigns 60/30/10 shares             |
+| `ranking.ts`     | Sorts eligible miners and assigns emission shares (60/30/10 for 3+, 70/30 for 2, 100% for 1) |
 | `metagraph.ts`   | Maps coldkeys → UIDs via Bittensor chain query                |
 | `weights.ts`     | Blends vault targets with arena miner targets                 |
 | `index.ts`       | Orchestrates the full pipeline                                |
 
-Validators may implement their own ranking logic by consuming the same public API endpoints (see `arena-api.md`) and computing their own weight targets before submission.
+Validators may implement their own ranking logic by consuming the same public API endpoints (see [arena-api.md](arena-api.md)) and computing their own weight targets before submission.
 
 ## Miner Notes
 

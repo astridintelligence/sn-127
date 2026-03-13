@@ -84,7 +84,7 @@ Every `BITTENSOR_WEIGHT_INTERVAL_MS` milliseconds the validator runs:
       - GET /public/competitions/:id/executions?after=<cursor>       (incremental)
       - Cache results in memory; only new data fetched each cycle
 
-   c. Eligibility check per miner (see ranking-algorithm.md)
+   c. Eligibility check per miner (see [ranking-algorithm.md](ranking-algorithm.md))
 
    d. Rank top-3 eligible miners by PnL
 

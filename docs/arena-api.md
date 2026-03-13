@@ -1,6 +1,6 @@
 # Arena API Reference
 
-This document describes the public endpoints on the **ai-trading-platform** that validators can use to implement their own ranking algorithms or audit the built-in one.
+This document describes the public endpoints on the **Astrid Arena** platform that validators can use to implement their own ranking algorithms or audit the built-in one.
 
 All endpoints are unauthenticated. Base URL is configured as `ARENA_API_URL` in the validator's `.env`.
 
