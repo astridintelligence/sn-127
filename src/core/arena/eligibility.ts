@@ -19,9 +19,11 @@ export interface EligibilityResult {
  *
  * A miner is eligible only if ALL of the following hold:
  *   1. They have made at least one trade.
- *   2. Every trade within the last RECENT_TRADE_WINDOW_MS has at least one execution run submitted within ±EXECUTION_WINDOW_MS of the trade's executedAt timestamp.
- *      Trades older than the recent window are ignored, allowing past failures to be forgiven once the agent is behaving correctly.
- *      If there are no recent trades, the coverage check is skipped entirely.
+ *   2. Every trade in the most recent RECENT_TRADE_WINDOW_MS slot that contains trades must have at least one
+ *      execution run submitted within ±EXECUTION_WINDOW_MS of the trade's executedAt timestamp.
+ *      If the latest window is empty, we slide back through consecutive windows until we find one with trades.
+ *      This means past failures are forgiven once the agent is behaving correctly, but a participant who has
+ *      gone silent (no recent trades) is still checked against their last active window.
  */
 
 export function checkEligibility(participants: ArenaParticipant[], allTrades: TradeEntry[], allExecutions: ExecutionEntry[]): EligibilityResult[] {
@@ -38,9 +40,32 @@ export function checkEligibility(participants: ArenaParticipant[], allTrades: Tr
             return { participant: p, eligible: false, reason: 'no trades during competition' };
         }
 
-        const recentTrades = trades.filter((t) => now - new Date(t.executedAt).getTime() <= RECENT_TRADE_WINDOW_MS);
+        const oldestTradeTime = Math.min(...trades.map((t) => new Date(t.executedAt).getTime()));
 
-        for (const trade of recentTrades) {
+        // Slide backwards through consecutive windows until we find one that contains trades.
+        let windowEnd = now;
+        let windowStart = now - RECENT_TRADE_WINDOW_MS;
+        let windowTrades: TradeEntry[] = [];
+
+        while (windowEnd > oldestTradeTime) {
+            windowTrades = trades.filter((t) => {
+                const time = new Date(t.executedAt).getTime();
+                return time >= windowStart && time < windowEnd;
+            });
+
+            if (windowTrades.length > 0) {
+                break;
+            }
+
+            windowEnd = windowStart;
+            windowStart = windowEnd - RECENT_TRADE_WINDOW_MS;
+        }
+
+        if (windowTrades.length === 0) {
+            return { participant: p, eligible: false, reason: 'no trades in recent windows' };
+        }
+
+        for (const trade of windowTrades) {
             const tradeTime = new Date(trade.executedAt).getTime();
 
             const hasNearbyExecution = executions.some((e) => {
