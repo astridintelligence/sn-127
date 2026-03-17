@@ -4,7 +4,7 @@ import logger from '../../config/logger';
 import { fetchAllExecutions, fetchAllTrades, fetchArenaInfo, type ExecutionEntry, type TradeEntry } from './api';
 import { appendExecutions, appendTrades, getCache } from './cache';
 import { checkEligibility } from './eligibility';
-import { getNeuronByColdkey } from './metagraph';
+import { getNeuronByHotkey, getNeuronsByColdkey } from './metagraph';
 import { rankEligibleMiners } from './ranking';
 import { blendWeights } from './weights';
 
@@ -93,13 +93,40 @@ export async function computeArenaWeights(
     const resolvedMiners: Array<(typeof ranked)[number] & { uid: number }> = [];
 
     for (const miner of ranked) {
-        const neuron = await getNeuronByColdkey(api, netuid, miner.participant.coldkey);
-        if (!neuron) {
-            logger.warn({ coldkey: miner.participant.coldkey }, 'arena: miner not found in metagraph — skipping');
-            continue;
+        const { coldkey, hotkey: preferredHotkey, uid: preferredUid } = miner.participant;
+
+        let resolvedUid: number | null = null;
+
+        // Validate the platform's preferred hotkey/uid against the fresh metagraph
+        if (preferredHotkey && preferredUid != null) {
+            const neuron = await getNeuronByHotkey(api, netuid, preferredHotkey);
+            if (neuron && neuron.uid === preferredUid && neuron.coldkey === coldkey) {
+                resolvedUid = neuron.uid;
+            } else {
+                logger.warn(
+                    {
+                        coldkey,
+                        preferredHotkey,
+                        preferredUid,
+                        found: neuron ?? null
+                    },
+                    'arena: preferred hotkey/uid from platform does not match metagraph — falling back to fresh metagraph entry'
+                );
+            }
         }
 
-        resolvedMiners.push({ ...miner, uid: neuron.uid });
+        // Fall back to any registration for this coldkey
+        if (resolvedUid == null) {
+            const neurons = await getNeuronsByColdkey(api, netuid, coldkey);
+            if (neurons.length === 0) {
+                logger.warn({ coldkey }, 'arena: miner not found in metagraph — skipping');
+                continue;
+            }
+
+            resolvedUid = neurons[0].uid;
+        }
+
+        resolvedMiners.push({ ...miner, uid: resolvedUid });
     }
 
     if (resolvedMiners.length === 0) {

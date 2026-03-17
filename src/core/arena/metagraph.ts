@@ -1,9 +1,11 @@
 /**
  * Metagraph UID/hotkey lookup for the sn-127 validator.
  *
- * Queries the Bittensor chain to build a coldkey → { uid, hotkey } map for
- * all registered neurons on the target subnet. Results are cached for
- * CACHE_TTL_MS to avoid hammering the chain on every weight cycle.
+ * Builds two indices from the chain:
+ *   byColdkey: coldkey → NeuronRecord[]   (all registrations for a coldkey)
+ *   byHotkey:  hotkey  → NeuronRecord     (unique — one registration per hotkey)
+ *
+ * Results are cached for CACHE_TTL_MS to avoid hammering the chain on every cycle.
  */
 
 import type { ApiPromise } from '@polkadot/api';
@@ -11,13 +13,15 @@ import logger from '../../config/logger';
 
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
-interface NeuronRecord {
+export interface NeuronRecord {
     uid: number;
     hotkey: string;
+    coldkey: string;
 }
 
 interface MetagraphCache {
-    neurons: Map<string, NeuronRecord>; // coldkey → { uid, hotkey }
+    byColdkey: Map<string, NeuronRecord[]>;
+    byHotkey: Map<string, NeuronRecord>;
     fetchedAt: number;
     netuid: number;
 }
@@ -26,7 +30,21 @@ let cache: MetagraphCache | null = null;
 
 async function refreshCache(api: ApiPromise, netuid: number): Promise<void> {
     const q = (api.query as any).subtensorModule;
-    const neurons = new Map<string, NeuronRecord>();
+    const byColdkey = new Map<string, NeuronRecord[]>();
+    const byHotkey = new Map<string, NeuronRecord>();
+
+    const addNeuron = (coldkey: string, hotkey: string, uid: number) => {
+        const record: NeuronRecord = { uid, hotkey, coldkey };
+
+        byHotkey.set(hotkey, record);
+
+        const existing = byColdkey.get(coldkey);
+        if (existing) {
+            existing.push(record);
+        } else {
+            byColdkey.set(coldkey, [record]);
+        }
+    };
 
     if (q.neurons) {
         const entries: [unknown, unknown][] = await q.neurons.entries(netuid);
@@ -42,7 +60,7 @@ async function refreshCache(api: ApiPromise, netuid: number): Promise<void> {
             const uid = typeof neuron.uid === 'number' ? neuron.uid : null;
 
             if (coldkey && hotkey && uid !== null) {
-                neurons.set(coldkey, { uid, hotkey });
+                addNeuron(coldkey, hotkey, uid);
             }
         }
     } else if (q.keys && q.owner) {
@@ -59,7 +77,7 @@ async function refreshCache(api: ApiPromise, netuid: number): Promise<void> {
             const coldkey = coldkeyRaw.toJSON() as string | null;
 
             if (coldkey && uid !== null) {
-                neurons.set(coldkey, { uid, hotkey });
+                addNeuron(coldkey, hotkey, uid);
             }
         }
     } else {
@@ -68,22 +86,36 @@ async function refreshCache(api: ApiPromise, netuid: number): Promise<void> {
         );
     }
 
-    logger.info({ netuid, count: neurons.size }, 'arena metagraph cache refreshed');
+    logger.info({ netuid, coldkeys: byColdkey.size, hotkeys: byHotkey.size }, 'arena metagraph cache refreshed');
 
-    cache = { neurons, fetchedAt: Date.now(), netuid };
+    cache = { byColdkey, byHotkey, fetchedAt: Date.now(), netuid };
 }
 
-/**
- * Look up the UID and hotkey for a given coldkey on the subnet.
- * Returns null if the coldkey is not registered.
- */
-export async function getNeuronByColdkey(api: ApiPromise, netuid: number, coldkey: string): Promise<NeuronRecord | null> {
+async function ensureCache(api: ApiPromise, netuid: number): Promise<MetagraphCache> {
     const isStale = !cache || cache.netuid !== netuid || Date.now() - cache.fetchedAt > CACHE_TTL_MS;
     if (isStale) {
         await refreshCache(api, netuid);
     }
 
-    return cache!.neurons.get(coldkey) ?? null;
+    return cache!;
+}
+
+/**
+ * Look up all registrations for a given coldkey on the subnet.
+ * Returns an empty array if the coldkey is not registered.
+ */
+export async function getNeuronsByColdkey(api: ApiPromise, netuid: number, coldkey: string): Promise<NeuronRecord[]> {
+    const c = await ensureCache(api, netuid);
+    return c.byColdkey.get(coldkey) ?? [];
+}
+
+/**
+ * Look up the registration for a given hotkey on the subnet.
+ * Returns null if the hotkey is not registered.
+ */
+export async function getNeuronByHotkey(api: ApiPromise, netuid: number, hotkey: string): Promise<NeuronRecord | null> {
+    const c = await ensureCache(api, netuid);
+    return c.byHotkey.get(hotkey) ?? null;
 }
 
 /** Force-invalidate the cache (e.g. after a known registration event). */

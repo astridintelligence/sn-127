@@ -4,6 +4,8 @@ const PAGE_SIZE = 500;
 export interface ArenaParticipant {
     participantId: string;
     coldkey: string;
+    hotkey: string | null;
+    uid: number | null;
     totalPnlPercent: number;
     totalTrades: number;
     rank: number | null;
