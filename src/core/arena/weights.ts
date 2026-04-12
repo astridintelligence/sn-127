@@ -21,6 +21,60 @@ import type { BittensorWeightTarget } from '../../config/env';
 import type { RankedMiner } from './ranking';
 
 /**
+ * Blend vault targets with delayed-emission payout winners.
+ *
+ * Each winner's raw weight = emissionsPercent × (splitPercent / 100), pre-summed
+ * per UID by the caller. The total arena allocation (sum of all emissionsPercent
+ * values) is subtracted from UID=0 (burn), identical to blendWeights().
+ *
+ * Floor + remainder strategy: floors each winner weight, gives the integer
+ * remainder to the highest-weighted winner.
+ *
+ * Example: two competitions each at 25%, splits 60/30/10:
+ *   UID A (comp1 rank1): floor(25×0.60) = 15  → +1 remainder = 16
+ *   UID B (comp1 rank2): floor(25×0.30) = 7
+ *   UID C (comp1 rank3): floor(25×0.10) = 2
+ *   UID D (comp2 rank1): floor(25×0.60) = 15
+ *   ...total = 50 subtracted from UID=0
+ */
+export function blendPayoutWeights(
+    vaultTargets: readonly BittensorWeightTarget[],
+    totalPercent: number,
+    allocationByUid: Map<number, number>
+): BittensorWeightTarget[] {
+    if (allocationByUid.size === 0 || totalPercent <= 0) {
+        return [...vaultTargets];
+    }
+
+    const burnTarget = vaultTargets.find((t) => t.uid === 0);
+    if (!burnTarget) {
+        return [...vaultTargets];
+    }
+
+    const reducedBurnWeight = Math.max(0, burnTarget.weight - totalPercent);
+
+    const blended: BittensorWeightTarget[] = vaultTargets.map((t) =>
+        t.uid === 0 ? { uid: 0, weight: reducedBurnWeight } : { uid: t.uid, weight: t.weight }
+    );
+
+    // Sort descending so remainder goes to the top winner
+    const sorted = [...allocationByUid.entries()].sort((a, b) => b[1] - a[1]);
+
+    const floorWeights = sorted.map(([, w]) => Math.floor(w));
+    const remainder = Math.round(totalPercent - floorWeights.reduce((sum, w) => sum + w, 0));
+
+    for (let i = 0; i < sorted.length; i++) {
+        const [uid] = sorted[i];
+        const weight = floorWeights[i] + (i === 0 ? remainder : 0);
+        if (weight > 0) {
+            blended.push({ uid, weight });
+        }
+    }
+
+    return blended;
+}
+
+/**
  * Blend vault weight targets with arena miner allocations.
  *
  * @param vaultTargets   Weight targets returned by the Vault API.

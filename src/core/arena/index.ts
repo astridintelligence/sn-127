@@ -1,12 +1,12 @@
 import type { ApiPromise } from '@polkadot/api';
 import type { BittensorWeightTarget } from '../../config/env';
 import logger from '../../config/logger';
-import { fetchAllExecutions, fetchAllTrades, fetchArenaInfo, type ExecutionEntry, type TradeEntry } from './api';
+import { fetchAllExecutions, fetchAllTrades, fetchArenaInfo, type ExecutionEntry, type PayoutCompetition, type TradeEntry } from './api';
 import { appendExecutions, appendTrades, getCache } from './cache';
 import { checkEligibility } from './eligibility';
 import { getNeuronByHotkey, getNeuronsByColdkey } from './metagraph';
 import { rankEligibleMiners } from './ranking';
-import { blendWeights } from './weights';
+import { blendPayoutWeights, blendWeights } from './weights';
 
 /**
  * Arena miner weight computation — entry point.
@@ -34,7 +34,13 @@ export async function computeArenaWeights(
         return null;
     }
 
-    const { arenaEmissionsPercent, competition, participants } = arenaInfo;
+    const { arenaEmissionsPercent, competition, participants, payoutCompetitions } = arenaInfo;
+
+    // Delayed emissions: completed competitions in their payout window take priority.
+    // Winners are pre-elected by the platform; no trade/eligibility checks needed.
+    if (payoutCompetitions && payoutCompetitions.length > 0) {
+        return computeDelayedEmissionsWeights(api, netuid, payoutCompetitions, vaultTargets);
+    }
 
     if (arenaEmissionsPercent === 0 || !competition || participants.length === 0) {
         logger.debug({ arenaEmissionsPercent, hasCompetition: !!competition }, 'arena: no active arena competition');
@@ -135,4 +141,59 @@ export async function computeArenaWeights(
     }
 
     return blendWeights(vaultTargets, arenaEmissionsPercent, resolvedMiners);
+}
+
+/**
+ * Compute weights for the delayed-emissions payout flow.
+ *
+ * Winners are pre-elected by the platform; no trade or eligibility checks
+ * are needed. Each winner's weight = emissionsPercent × (splitPercent / 100).
+ * Winners from multiple competitions with the same UID are accumulated.
+ */
+async function computeDelayedEmissionsWeights(
+    api: ApiPromise,
+    netuid: number,
+    payoutCompetitions: PayoutCompetition[],
+    vaultTargets: readonly BittensorWeightTarget[]
+): Promise<BittensorWeightTarget[] | null> {
+    const allocationByUid = new Map<number, number>();
+
+    for (const comp of payoutCompetitions) {
+        logger.info(
+            { competitionId: comp.competitionId, emissionsPercent: comp.emissionsPercent, winners: comp.winners.length },
+            'arena: delayed payout competition'
+        );
+
+        for (const winner of comp.winners) {
+            const rawWeight = comp.emissionsPercent * (winner.splitPercent / 100);
+
+            let resolvedUid: number | null = null;
+
+            if (winner.hotkey && winner.uid != null) {
+                const neuron = await getNeuronByHotkey(api, netuid, winner.hotkey);
+                if (neuron && neuron.uid === winner.uid && neuron.coldkey === winner.coldkey) {
+                    resolvedUid = neuron.uid;
+                }
+            }
+
+            if (resolvedUid == null) {
+                const neurons = await getNeuronsByColdkey(api, netuid, winner.coldkey);
+                if (neurons.length === 0) {
+                    logger.warn({ coldkey: winner.coldkey }, 'arena: delayed payout winner not found in metagraph — skipping');
+                    continue;
+                }
+                resolvedUid = neurons[0].uid;
+            }
+
+            allocationByUid.set(resolvedUid, (allocationByUid.get(resolvedUid) ?? 0) + rawWeight);
+        }
+    }
+
+    if (allocationByUid.size === 0) {
+        logger.warn('arena: no delayed payout winners could be resolved to UIDs');
+        return null;
+    }
+
+    const totalPercent = payoutCompetitions.reduce((sum, c) => sum + c.emissionsPercent, 0);
+    return blendPayoutWeights(vaultTargets, totalPercent, allocationByUid);
 }

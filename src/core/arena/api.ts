@@ -18,10 +18,27 @@ export interface ArenaCompetition {
     startTime: string;
 }
 
+export interface PayoutWinner {
+    rank: number;
+    splitPercent: number;
+    coldkey: string;
+    hotkey: string | null;
+    uid: number | null;
+}
+
+export interface PayoutCompetition {
+    competitionId: string;
+    name: string;
+    emissionsPercent: number;
+    payoutEndsAt: string;
+    winners: PayoutWinner[];
+}
+
 export interface ArenaInfo {
     arenaEmissionsPercent: number;
     competition: ArenaCompetition | null;
     participants: ArenaParticipant[];
+    payoutCompetitions?: PayoutCompetition[];
 }
 
 export interface TradeEntry {
