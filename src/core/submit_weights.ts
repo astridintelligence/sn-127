@@ -598,6 +598,8 @@ export const startSetWeightsService = async (): Promise<NodeJS.Timeout | null> =
             let targets: readonly BittensorWeightTarget[] = vaultTargets;
             if (config.arenaApiUrl) {
                 try {
+                    logger.info('ARENA_API_URL configured; attempting to compute blended arena weights');
+
                     const api = await connectPolkadot(config.bittensor.wsEndpoint);
                     const blended = await computeArenaWeights(api, config.bittensor.netuid, config.arenaApiUrl, vaultTargets);
                     if (blended) {
@@ -606,6 +608,8 @@ export const startSetWeightsService = async (): Promise<NodeJS.Timeout | null> =
                 } catch (err) {
                     logger.error({ err }, 'arena weight computation failed — falling back to vault-only weights');
                 }
+            } else {
+                logger.info('ARENA_API_URL not configured; skipping arena weight computation');
             }
 
             const uids = targets.map((w) => w.uid);
