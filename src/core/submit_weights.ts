@@ -4,21 +4,14 @@ import type { KeyringPair } from '@polkadot/keyring/cjs/types';
 import { hexToU8a, isHex, u8aToHex } from '@polkadot/util';
 import { cryptoWaitReady, ed25519PairFromSecret, ed25519PairFromSeed } from '@polkadot/util-crypto';
 import { getPublicKey } from '@scure/sr25519';
-import crypto from 'crypto';
-import { HttpCachingChain, HttpChainClient, type ChainOptions } from 'drand-client';
-import { roundAt, timelockEncrypt } from 'tlock-js';
-import config, { BittensorWeightTarget } from '../config/env';
-import logger from '../config/logger';
+import type { BittensorWeightTarget } from '../config/env';
+import config from '../config/env';
 import { connectPolkadot } from '../polkadot/connection';
+import { logDebug, logError, logInfo, logWarning } from '../utils/logging';
 import { computeArenaWeights } from './arena';
-import { fetchTargets } from './bittensor-weights';
-
-const defaultTempo = 360;
-const defaultCommitRevealPeriod = 1;
 
 export interface SubnetWeightsConfig {
     subnetConnection: SubnetConnectionConfig;
-    drand: DrandConfig;
 }
 
 export interface SubnetConnectionConfig {
@@ -29,57 +22,18 @@ export interface SubnetConnectionConfig {
     secretPhrase: string;
 }
 
-export interface DrandConfig {
-    apiBaseUrl: string;
-    chainHash: string;
-    publicKey: string;
-}
-
-export interface LoggerConfig {
-    level?: string;
-    pretty?: boolean;
-}
-
-interface SubnetInfo {
-    commitRevealEnabled: boolean;
-    commitRevealPeriod: number;
-    tempo: number;
-}
-
-interface SubnetScheduleParams {
-    tempo: number;
-    weightsRateLimit: number;
-    activityCutoff: number;
-    commitRevealEnabled: boolean;
-    revealPeriodEpochs: number;
-}
-
-export interface CommitWeightsResult {
+export interface SetWeightsResult {
     txHash: string;
-    encryptedCommit: string;
-    targetRound: number;
     blockNumber: number | null;
     extrinsicIndex: number | null;
 }
 
-export interface SetWeightsResult {
-    // For commit-reveal
-    commitHash?: string;
-    salt?: string;
-    revealAfterBlocks?: number;
-    targetRound?: number;
-
-    // For standard
-    standardHash?: string;
-
-    blockNumber?: number | null;
-    extrinsicIndex?: number | null;
+interface SubnetScheduleParams {
+    weightsRateLimit: number;
 }
 
 export class SubnetWeights {
     private config: SubnetWeightsConfig;
-
-    private chainOptions: ChainOptions;
 
     private api: ApiPromise | null = null;
     private account: KeyringPair | null = null;
@@ -88,219 +42,65 @@ export class SubnetWeights {
 
     constructor(config: SubnetWeightsConfig) {
         this.config = config;
-        if (!this.validateConfig()) {
-            throw new Error('Invalid SubnetWeightsConfig: Missing required Drand configuration fields');
-        }
-
-        this.chainOptions = {
-            disableBeaconVerification: false,
-            noCache: false,
-            chainVerificationParams: {
-                chainHash: this.config.drand.chainHash,
-                publicKey: this.config.drand.publicKey
-            }
-        };
-    }
-
-    private validateConfig(): boolean {
-        const drand = this.config.drand;
-        return !!(drand.apiBaseUrl && drand.chainHash && drand.publicKey);
     }
 
     async setWeights(uids: number[], weights: number[]): Promise<SetWeightsResult> {
         if (uids.length !== weights.length) {
             throw new Error('Miner IDs and weights arrays must have the same length');
         }
-
         if (uids.length === 0) {
             throw new Error('Must provide at least one miner');
         }
 
         try {
-            const subnetInfo = await this.getSubnetInfo();
+            const api = await this.getApi();
+            const account = await this.getAccount();
+            const subnetId = this.config.subnetConnection.subnetId;
+            const versionKey = 0;
 
-            // Choose method based on commit-reveal setting
-            if (subnetInfo.commitRevealEnabled) {
-                const revealAfterBlocks = subnetInfo.commitRevealPeriod * subnetInfo.tempo;
-                logger.debug(`Weights will be revealed after: ${revealAfterBlocks} blocks (~${Math.floor((revealAfterBlocks * 12) / 60)} minutes)\n`);
+            const setWeightsTx = api.tx.subtensorModule.setWeights(subnetId, uids, weights, versionKey);
 
-                const salt = crypto.randomBytes(8);
-                const targetRound = await this.calculateTargetRound(revealAfterBlocks, 12);
+            let blockNumber: number | null = null;
+            let extrinsicIndex: number | null = null;
 
-                const {
-                    txHash,
-                    targetRound: actualTargetRound,
-                    blockNumber,
-                    extrinsicIndex
-                } = await this.commitCRWeights(uids, weights, salt, targetRound);
+            const txHash = await new Promise<string>((resolve, reject) => {
+                setWeightsTx
+                    .signAndSend(account, async (result: { status?: any; dispatchError?: any }) => {
+                        const { status, dispatchError } = result;
 
-                return {
-                    commitHash: txHash,
-                    salt: salt.toString('hex'),
-                    revealAfterBlocks,
-                    targetRound: actualTargetRound,
-                    blockNumber,
-                    extrinsicIndex
-                };
-            } else {
-                logger.debug('Standard Mode (No Commit-Reveal)');
+                        if (status.isInBlock) {
+                            logDebug(`Transaction included in block: ${status.asInBlock.toHex()}`);
 
-                const txHash = await this.setWeightsStandard(uids, weights);
+                            const signedBlock = await api.rpc.chain.getBlock(status.asInBlock);
+                            blockNumber = signedBlock.block.header.number.toNumber();
 
-                logger.debug('Weights set successfully.');
+                            const extrinsics = signedBlock.block.extrinsics;
+                            extrinsicIndex = extrinsics.findIndex((ex: any) => ex.hash.toHex() === setWeightsTx.hash.toHex());
+                        }
 
-                return {
-                    standardHash: txHash
-                };
-            }
+                        if (status.isFinalized) {
+                            logDebug(`Transaction finalized: ${status.asFinalized.toHex()}`);
+
+                            if (dispatchError) {
+                                if (dispatchError.isModule) {
+                                    const decoded = api.registry.findMetaError(dispatchError.asModule);
+                                    reject(new Error(`${decoded.section}.${decoded.name}: ${decoded.docs.join(' ')}`));
+                                } else {
+                                    reject(new Error(dispatchError.toString()));
+                                }
+                            } else {
+                                resolve(status.asFinalized.toHex());
+                            }
+                        }
+                    })
+                    .catch(reject);
+            });
+
+            return { txHash, blockNumber, extrinsicIndex };
         } catch (err) {
-            logger.error(`Error setting weights: ${JSON.stringify(this.getErrorMetadata(err as Error))}`);
+            logError('Error setting weights', this.getErrorMetadata(err as Error));
             throw err;
         }
-    }
-
-    private async commitCRWeights(uids: number[], weights: number[], salt: Uint8Array, targetRound: number): Promise<CommitWeightsResult> {
-        const api = await this.getApi();
-        const account = await this.getAccount();
-        const subnetId = this.config.subnetConnection.subnetId;
-
-        const encryptedCommit = await this.createTimelockCommit(uids, weights, salt, targetRound);
-
-        const extrinsics = Object.keys(api.tx.subtensorModule);
-
-        let commitTx;
-
-        if (api.tx.subtensorModule.commitCrv3Weights) {
-            commitTx = api.tx.subtensorModule.commitCrv3Weights(subnetId, Array.from(encryptedCommit), targetRound);
-        } else if (api.tx.subtensorModule.commitTimelockedWeights) {
-            const commitRevealVersion = 4;
-            commitTx = api.tx.subtensorModule.commitTimelockedWeights(subnetId, Array.from(encryptedCommit), targetRound, commitRevealVersion);
-        } else {
-            throw new Error(
-                'Could not find CRv3 / CRv4 commit extrinsic. Available commit extrinsics: ' +
-                    extrinsics.filter((e) => e.toLowerCase().includes('commit')).join(', ') +
-                    '\n\nThis subnet may not support Drand timelock encryption. ' +
-                    'Try using the simple hash approach instead.'
-            );
-        }
-
-        logger.debug('Submitting timelock commit transaction ...');
-
-        let blockNumber: number | null = null;
-        let extrinsicIndex: number | null = null;
-
-        const txHash = await new Promise<string>((resolve, reject) => {
-            commitTx
-                .signAndSend(account, async (result: any) => {
-                    const { status, dispatchError } = result;
-
-                    if (result.status.isInBlock || result.status.isFinalized) {
-                        const blockHash = result.status.isInBlock ? result.status.asInBlock : result.status.asFinalized;
-
-                        const signedBlock = await api.rpc.chain.getBlock(blockHash);
-                        blockNumber = signedBlock.block.header.number.toNumber();
-
-                        const extrinsics = signedBlock.block.extrinsics;
-                        extrinsicIndex = -1;
-
-                        extrinsics.forEach((ex, index) => {
-                            if (ex.hash.toHex() === commitTx.hash.toHex()) {
-                                extrinsicIndex = index;
-                            }
-                        });
-                    }
-
-                    if (status.isFinalized) {
-                        logger.debug(`Commit finalized: ${status.asFinalized.toHex()}`);
-
-                        if (dispatchError) {
-                            if (dispatchError.isModule) {
-                                const decoded = api.registry.findMetaError(dispatchError.asModule);
-                                reject(new Error(`${decoded.section}.${decoded.name}: ${decoded.docs.join(' ')}`));
-                            } else {
-                                reject(new Error(dispatchError.toString()));
-                            }
-                        } else {
-                            resolve(status.asFinalized.toHex());
-                        }
-                    }
-                })
-                .catch(reject);
-        });
-
-        return { txHash, encryptedCommit, targetRound, blockNumber, extrinsicIndex };
-    }
-
-    private async createTimelockCommit(uids: number[], weights: number[], salt: Uint8Array, targetRound: number): Promise<string> {
-        const versionKey = 0;
-
-        const data = Buffer.concat([
-            Buffer.from(new Uint16Array(uids).buffer),
-            Buffer.from(new Uint16Array(weights).buffer),
-            salt,
-            Buffer.from(new Uint32Array([versionKey]).buffer) //
-        ]);
-
-        const client = this.getDrandClient();
-
-        const cipherText = await timelockEncrypt(targetRound, data, client);
-
-        return cipherText;
-    }
-
-    private async setWeightsStandard(uids: any[], weights: any[]): Promise<string> {
-        const api = await this.getApi();
-        const account = await this.getAccount();
-        const subnetId = this.config.subnetConnection.subnetId;
-        const versionKey = 0;
-
-        const setWeightsTx = api.tx.subtensorModule.setWeights(subnetId, uids, weights, versionKey);
-
-        return new Promise((resolve, reject) => {
-            setWeightsTx
-                .signAndSend(account, (result: { status?: any; dispatchError?: any }) => {
-                    const { status, dispatchError } = result;
-                    if (status.isInBlock) {
-                        logger.debug(`Transaction included in block: ${status.asInBlock.toHex()}`);
-                    }
-
-                    if (status.isFinalized) {
-                        logger.debug(`Transaction finalized: ${status.asFinalized.toHex()}`);
-
-                        if (dispatchError) {
-                            if (dispatchError.isModule) {
-                                const decoded = api.registry.findMetaError(dispatchError.asModule);
-                                reject(new Error(`${decoded.section}.${decoded.name}: ${decoded.docs.join(' ')}`));
-                            } else {
-                                reject(new Error(dispatchError.toString()));
-                            }
-                        } else {
-                            resolve(status.asFinalized.toHex());
-                        }
-                    }
-                })
-                .catch(reject);
-        });
-    }
-
-    private async calculateTargetRound(blocksInFuture: number, blockTime: number = 12): Promise<number> {
-        const client = this.getDrandClient();
-
-        const chainInfo = await client.chain().info();
-
-        const currentTimeMs = Date.now();
-        const targetTimeMs = currentTimeMs + blocksInFuture * blockTime * 1000;
-
-        const targetRound = roundAt(targetTimeMs, chainInfo);
-
-        return targetRound;
-    }
-
-    private getDrandClient(): HttpChainClient {
-        const chain = new HttpCachingChain(`${this.config.drand.apiBaseUrl}/${this.config.drand.chainHash}`, this.chainOptions);
-        const client = new HttpChainClient(chain);
-
-        return client;
     }
 
     async disconnect(): Promise<void> {
@@ -316,34 +116,12 @@ export class SubnetWeights {
                 const wsProvider = new WsProvider(this.config.subnetConnection.networkUrl);
                 this.api = await ApiPromise.create({ provider: wsProvider, noInitWarn: true });
             } catch (err) {
-                logger.error(this.getErrorMetadata(err as Error), 'Failed to create Polkadot API instance');
+                logError('Failed to create Polkadot API instance', this.getErrorMetadata(err as Error));
                 throw err;
             }
         }
 
         return this.api;
-    }
-
-    private async getSubnetInfo(): Promise<SubnetInfo> {
-        const api = await this.getApi();
-
-        const subnetId = this.config.subnetConnection.subnetId;
-        const commitRevealEnabled = await api.query.subtensorModule.commitRevealWeightsEnabled(subnetId);
-        const revealPeriodEpochs = await api.query.subtensorModule.revealPeriodEpochs(subnetId);
-        const tempo = await api.query.subtensorModule.tempo(subnetId);
-
-        const subnetInfo: SubnetInfo = {
-            commitRevealEnabled: commitRevealEnabled.toJSON() as boolean,
-            commitRevealPeriod: (revealPeriodEpochs.toJSON() as number) || defaultCommitRevealPeriod,
-            tempo: (tempo.toJSON() as number) || defaultTempo
-        };
-
-        logger.debug('Subnet Configuration:');
-        logger.debug(`  - Commit-Reveal Enabled: ${subnetInfo.commitRevealEnabled}`);
-        logger.debug(`  - Commit-Reveal Period: ${subnetInfo.commitRevealPeriod} tempos`);
-        logger.debug(`  - Tempo: ${subnetInfo.tempo} blocks`);
-
-        return subnetInfo;
     }
 
     private async getAccount(): Promise<KeyringPair> {
@@ -360,6 +138,7 @@ export class SubnetWeights {
             type: 'sr25519',
             ss58Format: this.config.subnetConnection.ss58Format
         });
+
         const secretPhrase = this.config.subnetConnection.secretPhrase.trim();
         const hexSecret = this.normalizeHexSecret(secretPhrase);
         const account = hexSecret
@@ -367,14 +146,14 @@ export class SubnetWeights {
             : keyring.addFromUri(secretPhrase);
 
         if (!this.matchesExpectedAccount(account, this.config.subnetConnection.ss58Address)) {
-            logger.warn(
-                'The provided validator secret does not match the expected SS58 address. ' +
-                    `Expected Address: ${this.config.subnetConnection.ss58Address || 'N/A'}. ` +
-                    `Derived Address: ${account.address}, Derived Public Key: ${u8aToHex(account.publicKey)}`
-            );
+            logWarning('The provided validator secret does not match the expected SS58 address', {
+                expectedAddress: this.config.subnetConnection.ss58Address || 'N/A',
+                derivedAddress: account.address,
+                derivedPublicKey: u8aToHex(account.publicKey)
+            });
         }
 
-        logger.debug(`Using account: ${account.address}`);
+        logDebug(`Using account: ${account.address}`);
 
         this.account = account;
 
@@ -388,23 +167,6 @@ export class SubnetWeights {
 
         if (secretPhrase.length % 2 === 0 && /^[0-9a-fA-F]+$/.test(secretPhrase)) {
             return `0x${secretPhrase}`;
-        }
-
-        return null;
-    }
-
-    private normalizeHex(value?: string): string | null {
-        const trimmed = value?.trim() ?? '';
-        if (!trimmed) {
-            return null;
-        }
-
-        if (isHex(trimmed)) {
-            return trimmed.toLowerCase();
-        }
-
-        if (trimmed.length % 2 === 0 && /^[0-9a-fA-F]+$/.test(trimmed)) {
-            return `0x${trimmed}`.toLowerCase();
         }
 
         return null;
@@ -466,17 +228,12 @@ export class SubnetWeights {
         throw new Error(`invalid validator secret seed length: ${keyBytes.length} bytes`);
     }
 
-    getErrorMetadata(err: Error): Record<string, any> {
-        let metadata: Record<string, any> = {};
-
-        if (err) {
-            metadata['message'] = err.message || '';
-            metadata['stack'] = err.stack || '';
-            metadata['name'] = err.name || '';
-            metadata['cause'] = err.cause || '';
-        }
-
-        return metadata;
+    private getErrorMetadata(err: Error): Record<string, any> {
+        return {
+            message: err?.message ?? '',
+            stack: err?.stack ?? '',
+            name: err?.name ?? ''
+        };
     }
 
     async submitWeights(uids: number[], weights: number[]): Promise<SetWeightsResult | null> {
@@ -484,7 +241,6 @@ export class SubnetWeights {
             const scheduleParams = await this.getSubnetScheduleParams();
             const currentBlock = await this.getCurrentBlock();
 
-            // Calculate if we can commit
             const blocksSinceLastCommit = this.lastCommitBlock ? currentBlock - this.lastCommitBlock : Infinity;
             const canCommit = blocksSinceLastCommit >= scheduleParams.weightsRateLimit;
 
@@ -492,12 +248,12 @@ export class SubnetWeights {
                 const blocksToWait = scheduleParams.weightsRateLimit - blocksSinceLastCommit;
                 const minutesToWait = Math.ceil((blocksToWait * 12) / 60);
 
-                logger.debug(`Rate limit active. Need to wait ${blocksToWait} more blocks (~${minutesToWait} minutes)`);
-                logger.debug(`   Next commit available at block: ${this.lastCommitBlock + scheduleParams.weightsRateLimit}`);
+                logDebug(`Rate limit active. Need to wait ${blocksToWait} more blocks (~${minutesToWait} minutes)`, {
+                    nextCommitBlock: this.lastCommitBlock + scheduleParams.weightsRateLimit
+                });
 
-                // Sleep until we can commit (with a small buffer)
-                const sleepMs = blocksToWait * 12 * 1000 + 10000; // blocks * 12s + 10s buffer
-                logger.debug(`   Sleeping for ${Math.ceil(sleepMs / 1000 / 60)} minutes...`);
+                const sleepMs = blocksToWait * 12 * 1000 + 10_000;
+                logDebug(`Sleeping for ${Math.ceil(sleepMs / 1000 / 60)} minutes...`);
 
                 await this.disconnect();
                 await this.sleep(sleepMs);
@@ -509,9 +265,10 @@ export class SubnetWeights {
 
             this.lastCommitBlock = currentBlock;
 
-            logger.info('Weight commit successful!');
-            logger.info(`   Transaction: ${result.commitHash || result.standardHash}`);
-            logger.info(`   Next commit available after block: ${this.lastCommitBlock + scheduleParams.weightsRateLimit}`);
+            logInfo('Weight commit successful', {
+                transaction: result.txHash,
+                nextCommitAfterBlock: this.lastCommitBlock + scheduleParams.weightsRateLimit
+            });
 
             return result;
         } finally {
@@ -523,18 +280,10 @@ export class SubnetWeights {
         const api = await this.getApi();
         const subnetId = this.config.subnetConnection.subnetId;
 
-        const tempo = await api.query.subtensorModule.tempo(subnetId);
         const weightsRateLimit = await api.query.subtensorModule.weightsSetRateLimit(subnetId);
-        const activityCutoff = await api.query.subtensorModule.activityCutoff(subnetId);
-        const commitRevealEnabled = await api.query.subtensorModule.commitRevealWeightsEnabled(subnetId);
-        const revealPeriodEpochs = await api.query.subtensorModule.revealPeriodEpochs(subnetId);
 
         return {
-            tempo: tempo.toJSON() as number,
-            weightsRateLimit: weightsRateLimit.toJSON() as number,
-            activityCutoff: activityCutoff.toJSON() as number,
-            commitRevealEnabled: commitRevealEnabled.toJSON() as boolean,
-            revealPeriodEpochs: revealPeriodEpochs.toJSON() as number
+            weightsRateLimit: weightsRateLimit.toJSON() as number
         };
     }
 
@@ -550,82 +299,91 @@ export class SubnetWeights {
     }
 }
 
-// Drand configuration - https://docs.drand.love/dev-guide/API%20Documentation%20v1/chains
-
 export const startSetWeightsService = async (): Promise<NodeJS.Timeout | null> => {
     if (!config.bittensor.enabled) {
-        logger.info('bittensor weight service disabled');
+        logInfo('Bittensor weight service disabled');
         return null;
     }
 
     const validatorSecret = config.validatorSecretSeed.trim() || config.validatorMnemonic.trim();
     if (!validatorSecret) {
-        logger.warn('validator mnemonic or secret seed not provided; bittensor weight service disabled');
+        logWarning('Validator mnemonic or secret seed not provided, bittensor weight service disabled');
         return null;
     }
 
-    logger.info(
-        {
-            endpoint: config.bittensor.wsEndpoint,
-            netuid: config.bittensor.netuid,
-            intervalMs: config.bittensor.weightIntervalMs
-        },
-        'starting bittensor weight service'
-    );
+    logInfo('Starting bittensor weight service', {
+        endpoint: config.bittensor.wsEndpoint,
+        netuid: config.bittensor.netuid,
+        intervalMs: config.bittensor.weightIntervalMs
+    });
 
-    const subnetWeightsConfig: SubnetWeightsConfig = {
+    const subnetWeights = new SubnetWeights({
         subnetConnection: {
             networkUrl: config.bittensor.wsEndpoint,
             subnetId: config.bittensor.netuid,
             ss58Address: config.validatorSs58Address,
             ss58Format: config.validatorSs58Format,
             secretPhrase: validatorSecret
-        },
-        drand: config.drandConfig
-    };
+        }
+    });
 
-    const subnetWeights = new SubnetWeights(subnetWeightsConfig);
+    let lastSuccessfulWeights: BittensorWeightTarget[] | null = null;
+
+    const weightsEqual = (a: BittensorWeightTarget[], b: BittensorWeightTarget[]): boolean => {
+        if (a.length !== b.length) {
+            return false;
+        }
+
+        const sortedA = [...a].sort((x, y) => x.uid - y.uid);
+        const sortedB = [...b].sort((x, y) => x.uid - y.uid);
+
+        return sortedA.every((w, i) => w.uid === sortedB[i].uid && w.weight === sortedB[i].weight);
+    };
 
     const run = async () => {
         try {
-            const vaultTargets = await fetchTargets();
-            if (vaultTargets.length === 0) {
-                logger.debug('no bittensor weights available to submit');
+            if (!config.arenaApiUrl) {
+                logWarning('ARENA_API_URL not configured, skipping weight computation');
                 return;
             }
 
-            // Attempt to blend in arena miner weights if configured
-            let targets: readonly BittensorWeightTarget[] = vaultTargets;
-            if (config.arenaApiUrl) {
-                try {
-                    logger.info('ARENA_API_URL configured; attempting to compute blended arena weights');
+            const api = await connectPolkadot(config.bittensor.wsEndpoint);
+            const targets = await computeArenaWeights(api, config.bittensor.netuid, config.arenaApiUrl);
 
-                    const api = await connectPolkadot(config.bittensor.wsEndpoint);
-                    const blended = await computeArenaWeights(api, config.bittensor.netuid, config.arenaApiUrl, vaultTargets);
-                    if (blended) {
-                        targets = blended;
-                    }
-                } catch (err) {
-                    logger.error({ err }, 'arena weight computation failed — falling back to vault-only weights');
+            let effectiveTargets: BittensorWeightTarget[];
+
+            if (targets === null) {
+                if (lastSuccessfulWeights) {
+                    logWarning('Failed to fetch arena competitions, reusing last successful weights', {
+                        cachedWeights: lastSuccessfulWeights.map((w) => ({ uid: w.uid, weight: w.weight }))
+                    });
+                    effectiveTargets = lastSuccessfulWeights;
+                } else {
+                    logWarning('Failed to fetch arena competitions and no previous weights cached, skipping cycle');
+                    return;
                 }
             } else {
-                logger.info('ARENA_API_URL not configured; skipping arena weight computation');
+                if (lastSuccessfulWeights && !weightsEqual(targets, lastSuccessfulWeights)) {
+                    logInfo('Weight set changed', {
+                        slack: true,
+                        previous: lastSuccessfulWeights,
+                        current: targets
+                    });
+                }
+                lastSuccessfulWeights = targets;
+                effectiveTargets = targets;
             }
 
-            const uids = targets.map((w) => w.uid);
-            const weights = targets.map((w) => w.weight);
+            const uids = effectiveTargets.map((w) => w.uid);
+            const weights = effectiveTargets.map((w) => w.weight);
 
-            logger.info(
-                `Weights ready to submit: ${uids.length} targets (Uids: [${uids.join(', ')}], Weights: [${weights.join(', ')}])${subnetWeights ? '' : '.'}`
-            );
+            logInfo(`Weights ready to submit: ${uids.length} targets (Uids: [${uids.join(', ')}], Weights: [${weights.join(', ')}])`);
 
             const result = await subnetWeights.submitWeights(uids, weights);
 
-            logger.info(
-                `Submitted weights successfully: ${result?.blockNumber || 'N/A'}-${result?.extrinsicIndex?.toString().padStart(4, '0') || 'N/A'}`
-            );
+            logInfo(`Submitted weights: ${result?.blockNumber ?? 'N/A'}-${result?.extrinsicIndex?.toString().padStart(4, '0') ?? 'N/A'}`);
         } catch (err) {
-            logger.error({ err }, 'failed to submit bittensor weights');
+            logError('Failed to submit bittensor weights', { err });
         }
     };
 

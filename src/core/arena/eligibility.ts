@@ -1,4 +1,4 @@
-import type { ArenaParticipant, ExecutionEntry, TradeEntry } from './api';
+import type { PresenceEntry, TradeEntry } from './api';
 
 /** Time window (each side) in which an execution must exist near a trade. */
 const EXECUTION_WINDOW_MS = 2 * 60 * 60 * 1000; // ±2 hours
@@ -6,8 +6,15 @@ const EXECUTION_WINDOW_MS = 2 * 60 * 60 * 1000; // ±2 hours
 /** How far back to look when evaluating recent trade coverage. Older trades are ignored. */
 const RECENT_TRADE_WINDOW_MS = 12 * 60 * 60 * 1000; // 12 hours
 
+export interface EligibilityParticipant {
+    participantId: string;
+    coldkey: string;
+    hotkey: string | null;
+    uid: number | null;
+}
+
 export interface EligibilityResult {
-    participant: ArenaParticipant;
+    participant: EligibilityParticipant;
     eligible: boolean;
     reason?: string;
 }
@@ -26,7 +33,11 @@ export interface EligibilityResult {
  *      gone silent (no recent trades) is still checked against their last active window.
  */
 
-export function checkEligibility(participants: ArenaParticipant[], allTrades: TradeEntry[], allExecutions: ExecutionEntry[]): EligibilityResult[] {
+export function checkEligibility(
+    participants: EligibilityParticipant[],
+    allTrades: TradeEntry[],
+    allExecutions: PresenceEntry[]
+): EligibilityResult[] {
     const tradesByParticipant = groupBy(allTrades, (t) => t.participantId ?? '');
     const executionsByParticipant = groupBy(allExecutions, (e) => e.participantId ?? '');
 

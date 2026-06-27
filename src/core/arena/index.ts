@@ -1,199 +1,226 @@
 import type { ApiPromise } from '@polkadot/api';
 import type { BittensorWeightTarget } from '../../config/env';
-import logger from '../../config/logger';
-import { fetchAllExecutions, fetchAllTrades, fetchArenaInfo, type ExecutionEntry, type PayoutCompetition, type TradeEntry } from './api';
+import { logDebug, logError, logInfo, logWarning } from '../../utils/logging';
+import {
+    fetchAllTrades,
+    fetchCompletedCompetitions,
+    fetchExecutionPresence,
+    type CompletedCompetition,
+    type PresenceEntry,
+    type TradeEntry
+} from './api';
 import { appendExecutions, appendTrades, getCache } from './cache';
-import { checkEligibility } from './eligibility';
+import { EMISSION_SPLITS, TOP_N } from './constants';
+import { checkEligibility, type EligibilityParticipant } from './eligibility';
 import { getNeuronByHotkey, getNeuronsByColdkey } from './metagraph';
-import { rankEligibleMiners } from './ranking';
-import { blendPayoutWeights, blendWeights } from './weights';
+import { computeAllParticipantPnl } from './pnl';
+import { buildArenaWeights } from './weights';
 
 /**
  * Arena miner weight computation — entry point.
  *
- * Called once per weight-setting cycle. Fetches arena state from the
- * Astrid Arena API, checks miner eligibility, ranks them, resolves their
- * Bittensor UIDs, and returns blended weight targets.
+ * Called once per weight-setting cycle. Fetches completed competitions that
+ * are in their delayed-emissions payout window, replays each participant's
+ * trades to compute PnL independently, runs eligibility checks, ranks the
+ * top-3, resolves their Bittensor UIDs, and returns weight targets.
  *
- * Returns null when arena emissions are inactive (no live competition, no
- * eligible miners, or ARENA_API_URL not configured). The caller should fall
- * back to vault-only weights in that case.
+ * Returns [{uid:0, weight:100}] (all burn) when no competition is currently
+ * in its payout window or when no eligible miners are found.
+ *
+ * Emission config is hardcoded in constants.ts and is NOT fetched from the platform API.
  */
-export async function computeArenaWeights(
+export async function computeArenaWeights(api: ApiPromise, netuid: number, arenaApiUrl: string): Promise<BittensorWeightTarget[] | null> {
+    const burnOnly: BittensorWeightTarget[] = [{ uid: 0, weight: 100 }];
+
+    let competitions: CompletedCompetition[];
+    try {
+        competitions = await fetchCompletedCompetitions(arenaApiUrl);
+    } catch (err) {
+        logError('Failed to fetch completed competitions', { err });
+        return null;
+    }
+
+    const now = new Date();
+
+    competitions = competitions.filter((c) => {
+        const inWindow = now >= new Date(c.emissionsStartDate) && now < new Date(c.emissionsEndDate);
+        if (!inWindow) {
+            logWarning('Competition outside emissions window, skipping', {
+                competitionId: c.competitionId,
+                emissionsStartDate: c.emissionsStartDate,
+                emissionsEndDate: c.emissionsEndDate
+            });
+        }
+
+        return inWindow;
+    });
+
+    if (competitions.length === 0) {
+        logInfo('No completed competitions in payout window, returning burn-only weights');
+        return burnOnly;
+    }
+
+    logInfo('Competitions in payout window', { count: competitions.length });
+
+    // Resolve each competition's eligible, ranked miners
+    const resolvedCompetitions: Array<{
+        competitionId: string;
+        rankedMiners: Array<{ uid: number; emissionShare: number }>;
+    }> = [];
+
+    for (const comp of competitions) {
+        const ranked = await resolveCompetitionMiners(api, netuid, arenaApiUrl, comp);
+        if (ranked.length > 0) {
+            resolvedCompetitions.push({ competitionId: comp.competitionId, rankedMiners: ranked });
+        }
+    }
+
+    if (resolvedCompetitions.length === 0) {
+        logInfo('No eligible miners found across all payout competitions');
+        return burnOnly;
+    }
+
+    return buildArenaWeights(resolvedCompetitions);
+}
+
+/**
+ * For a single completed competition: fetch trades + executions, run eligibility
+ * checks, replay PnL, rank top-N, and resolve Bittensor UIDs.
+ */
+async function resolveCompetitionMiners(
     api: ApiPromise,
     netuid: number,
     arenaApiUrl: string,
-    vaultTargets: readonly BittensorWeightTarget[]
-): Promise<BittensorWeightTarget[] | null> {
-    let arenaInfo;
+    comp: CompletedCompetition
+): Promise<Array<{ uid: number; emissionShare: number }>> {
+    const cache = getCache(comp.competitionId);
 
-    try {
-        arenaInfo = await fetchArenaInfo(arenaApiUrl);
-    } catch (err) {
-        logger.error({ err }, 'arena: failed to fetch arena info — skipping arena weights');
-        return null;
-    }
+    // Only consider non-disqualified participants
+    const eligible = comp.participants.filter((p) => !p.isDisqualified);
 
-    const { arenaEmissionsPercent, competition, participants, payoutCompetitions } = arenaInfo;
-
-    // Delayed emissions: completed competitions in their payout window take priority.
-    // Winners are pre-elected by the platform; no trade/eligibility checks needed.
-    if (payoutCompetitions && payoutCompetitions.length > 0) {
-        return computeDelayedEmissionsWeights(api, netuid, payoutCompetitions, vaultTargets);
-    }
-
-    if (arenaEmissionsPercent === 0 || !competition || participants.length === 0) {
-        logger.debug({ arenaEmissionsPercent, hasCompetition: !!competition }, 'arena: no active arena competition');
-        return null;
-    }
-
-    logger.info({ competitionId: competition.id, participants: participants.length, arenaEmissionsPercent }, 'arena: active competition found');
-
-    const cache = getCache(competition.id);
+    const eligibleIds = eligible.map((p) => p.participantId);
 
     let newTrades: TradeEntry[] = [];
-    let newExecutions: ExecutionEntry[] = [];
+    let newExecutions: PresenceEntry[] = [];
 
     try {
         [newTrades, newExecutions] = await Promise.all([
-            fetchAllTrades(arenaApiUrl, competition.id, cache.tradesLastFetchedAt),
-            fetchAllExecutions(arenaApiUrl, competition.id, cache.executionsLastFetchedAt)
+            fetchAllTrades(arenaApiUrl, comp.competitionId, cache.tradesLastFetchedAt),
+            fetchExecutionPresence(arenaApiUrl, comp.competitionId, eligibleIds, cache.executionsLastFetchedAt)
         ]);
     } catch (err) {
-        logger.error({ err }, 'arena: failed to fetch trades/executions — using cached data');
+        logError('Failed to fetch trades/executions, using cached data', { err, competitionId: comp.competitionId });
     }
 
     appendTrades(cache, newTrades);
     appendExecutions(cache, newExecutions);
 
-    logger.debug(
-        {
-            competitionId: competition.id,
-            cachedTrades: cache.trades.length,
-            cachedExecutions: cache.executions.length,
-            newTrades: newTrades.length,
-            newExecutions: newExecutions.length
-        },
-        'arena: cache updated'
-    );
+    logDebug('Trade/execution cache updated', {
+        competitionId: comp.competitionId,
+        cachedTrades: cache.trades.length,
+        cachedExecutions: cache.executions.length,
+        newTrades: newTrades.length,
+        newExecutions: newExecutions.length
+    });
 
-    const eligibilityResults = checkEligibility(participants, cache.trades, cache.executions);
+    if (eligible.length === 0) {
+        logInfo('All participants are disqualified', { competitionId: comp.competitionId });
+        return [];
+    }
+
+    // Wrap eligible participants in the shape expected by checkEligibility
+    const asArenaParticipants: EligibilityParticipant[] = eligible.map((p) => ({
+        participantId: p.participantId,
+        coldkey: p.coldkey,
+        hotkey: p.hotkey,
+        uid: p.uid
+    }));
+
+    const eligibilityResults = checkEligibility(asArenaParticipants, cache.trades, cache.executions);
+    const passedEligibility = eligibilityResults.filter((r) => r.eligible);
 
     const ineligible = eligibilityResults.filter((r) => !r.eligible);
     if (ineligible.length > 0) {
-        logger.debug({ ineligible: ineligible.map((r) => ({ coldkey: r.participant.coldkey, reason: r.reason })) }, 'arena: ineligible miners');
+        logDebug('Ineligible miners', { ineligible: ineligible.map((r) => ({ coldkey: r.participant.coldkey, reason: r.reason })) });
     }
 
-    const ranked = rankEligibleMiners(eligibilityResults);
-
-    if (ranked.length === 0) {
-        logger.info('arena: no eligible miners qualify for emissions');
-        return null;
+    if (passedEligibility.length === 0) {
+        logInfo('No miners passed eligibility check', { competitionId: comp.competitionId });
+        return [];
     }
 
-    logger.info(
-        { ranked: ranked.map((r) => ({ coldkey: r.participant.coldkey, position: r.position, pnl: r.participant.totalPnlPercent })) },
-        'arena: ranked miners'
-    );
+    // Replay trades to compute PnL independently
+    const pnlByParticipant = computeAllParticipantPnl(cache.trades, comp.initialBalance);
 
-    const resolvedMiners: Array<(typeof ranked)[number] & { uid: number }> = [];
+    // Rank eligible miners by replayed PnL (highest wins), take up to TOP_N
+    const ranked = passedEligibility
+        .map((r) => {
+            const pnl = pnlByParticipant.get(r.participant.participantId);
+            return { participant: r.participant, pnlPercent: pnl?.totalPnlPercent ?? 0 };
+        })
+        .sort((a, b) => b.pnlPercent - a.pnlPercent)
+        .slice(0, TOP_N);
 
-    for (const miner of ranked) {
-        const { coldkey, hotkey: preferredHotkey, uid: preferredUid } = miner.participant;
+    logInfo('Ranked miners', {
+        competitionId: comp.competitionId,
+        ranked: ranked.map((r) => ({ coldkey: r.participant.coldkey, pnl: r.pnlPercent }))
+    });
 
-        let resolvedUid: number | null = null;
+    // Assign emission splits based on how many miners qualified
+    const splits = getSplitsForCount(ranked.length);
 
-        // Validate the platform's preferred hotkey/uid against the fresh metagraph
-        if (preferredHotkey && preferredUid != null) {
-            const neuron = await getNeuronByHotkey(api, netuid, preferredHotkey);
-            if (neuron && neuron.uid === preferredUid && neuron.coldkey === coldkey) {
-                resolvedUid = neuron.uid;
-            } else {
-                logger.warn(
-                    {
-                        coldkey,
-                        preferredHotkey,
-                        preferredUid,
-                        found: neuron ?? null
-                    },
-                    'arena: preferred hotkey/uid from platform does not match metagraph — falling back to fresh metagraph entry'
-                );
-            }
-        }
+    // Resolve Bittensor UIDs from the live metagraph
+    const resolvedMiners: Array<{ uid: number; emissionShare: number }> = [];
 
-        // Fall back to any registration for this coldkey
+    for (let i = 0; i < ranked.length; i++) {
+        const { participant } = ranked[i];
+        const emissionShare = splits[i];
+
+        const resolvedUid = await resolveUid(api, netuid, participant);
         if (resolvedUid == null) {
-            const neurons = await getNeuronsByColdkey(api, netuid, coldkey);
-            if (neurons.length === 0) {
-                logger.warn({ coldkey }, 'arena: miner not found in metagraph — skipping');
-                continue;
-            }
-
-            resolvedUid = neurons[0].uid;
+            continue;
         }
 
-        resolvedMiners.push({ ...miner, uid: resolvedUid });
+        resolvedMiners.push({ uid: resolvedUid, emissionShare });
     }
 
-    if (resolvedMiners.length === 0) {
-        logger.warn('arena: no ranked miners could be resolved to UIDs');
-        return null;
-    }
-
-    return blendWeights(vaultTargets, arenaEmissionsPercent, resolvedMiners);
+    return resolvedMiners;
 }
 
-/**
- * Compute weights for the delayed-emissions payout flow.
- *
- * Winners are pre-elected by the platform; no trade or eligibility checks
- * are needed. Each winner's weight = emissionsPercent × (splitPercent / 100).
- * Winners from multiple competitions with the same UID are accumulated.
- */
-async function computeDelayedEmissionsWeights(
-    api: ApiPromise,
-    netuid: number,
-    payoutCompetitions: PayoutCompetition[],
-    vaultTargets: readonly BittensorWeightTarget[]
-): Promise<BittensorWeightTarget[] | null> {
-    const allocationByUid = new Map<number, number>();
-
-    for (const comp of payoutCompetitions) {
-        logger.info(
-            { competitionId: comp.competitionId, emissionsPercent: comp.emissionsPercent, winners: comp.winners.length },
-            'arena: delayed payout competition'
-        );
-
-        for (const winner of comp.winners) {
-            const rawWeight = comp.emissionsPercent * (winner.splitPercent / 100);
-
-            let resolvedUid: number | null = null;
-
-            if (winner.hotkey && winner.uid != null) {
-                const neuron = await getNeuronByHotkey(api, netuid, winner.hotkey);
-                if (neuron && neuron.uid === winner.uid && neuron.coldkey === winner.coldkey) {
-                    resolvedUid = neuron.uid;
-                }
-            }
-
-            if (resolvedUid == null) {
-                const neurons = await getNeuronsByColdkey(api, netuid, winner.coldkey);
-                if (neurons.length === 0) {
-                    logger.warn({ coldkey: winner.coldkey }, 'arena: delayed payout winner not found in metagraph — skipping');
-                    continue;
-                }
-                resolvedUid = neurons[0].uid;
-            }
-
-            allocationByUid.set(resolvedUid, (allocationByUid.get(resolvedUid) ?? 0) + rawWeight);
-        }
+/** Trim EMISSION_SPLITS to the actual miner count and renormalize so they sum to 1. */
+function getSplitsForCount(count: number): number[] {
+    if (count === 0) {
+        return [];
     }
 
-    if (allocationByUid.size === 0) {
-        logger.warn('arena: no delayed payout winners could be resolved to UIDs');
+    const raw = EMISSION_SPLITS.slice(0, count);
+    const total = raw.reduce((s, v) => s + v, 0);
+
+    return raw.map((v) => v / total);
+}
+
+async function resolveUid(api: ApiPromise, netuid: number, participant: EligibilityParticipant): Promise<number | null> {
+    const { coldkey, hotkey, uid: preferredUid } = participant;
+
+    if (hotkey && preferredUid != null) {
+        const neuron = await getNeuronByHotkey(api, netuid, hotkey);
+        if (neuron && neuron.uid === preferredUid && neuron.coldkey === coldkey) {
+            return neuron.uid;
+        }
+
+        logWarning('Preferred hotkey/uid does not match metagraph, falling back to coldkey lookup', {
+            coldkey,
+            hotkey,
+            preferredUid,
+            found: neuron ?? null
+        });
+    }
+
+    const neurons = await getNeuronsByColdkey(api, netuid, coldkey);
+    if (neurons.length === 0) {
+        logWarning('Miner not found in metagraph, skipping', { coldkey });
         return null;
     }
 
-    const totalPercent = payoutCompetitions.reduce((sum, c) => sum + c.emissionsPercent, 0);
-    return blendPayoutWeights(vaultTargets, totalPercent, allocationByUid);
+    return neurons[0].uid;
 }

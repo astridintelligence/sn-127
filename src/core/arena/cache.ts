@@ -1,9 +1,9 @@
-import type { ExecutionEntry, TradeEntry } from './api';
+import type { PresenceEntry, TradeEntry } from './api';
 
 export interface CompetitionCache {
     competitionId: string;
     trades: TradeEntry[];
-    executions: ExecutionEntry[];
+    executions: PresenceEntry[];
     tradesLastFetchedAt: string | null;
     executionsLastFetchedAt: string | null;
 }
@@ -41,7 +41,7 @@ export function appendTrades(cache: CompetitionCache, newTrades: TradeEntry[]): 
     }
 }
 
-export function appendExecutions(cache: CompetitionCache, newExecutions: ExecutionEntry[]): void {
+export function appendExecutions(cache: CompetitionCache, newExecutions: PresenceEntry[]): void {
     if (!cache) {
         throw new Error('Cache not initialized. Call getCache(competitionId) first.');
     }

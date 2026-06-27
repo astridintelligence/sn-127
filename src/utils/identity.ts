@@ -1,8 +1,8 @@
 import { KeyringPair } from '@polkadot/keyring/types';
 import { u8aToHex } from '@polkadot/util';
 
-import logger from '../config/logger';
 import { initWalletFromMnemonic, initWalletFromSecretSeed } from '../polkadot/wallet';
+import { logError, logInfo, logWarning } from './logging';
 
 export interface ValidatorIdentity {
     readonly address: string;
@@ -26,7 +26,7 @@ export const loadIdentity = async (credentials: ValidatorCredentials, options: L
     const secretSeed = credentials.secretSeed?.trim() ?? '';
 
     if (!mnemonic && !secretSeed) {
-        logger.warn('validator mnemonic or secret seed not provided');
+        logWarning('Validator mnemonic or secret seed not provided');
         return null;
     }
 
@@ -48,18 +48,15 @@ export const loadIdentity = async (credentials: ValidatorCredentials, options: L
             sign: async (payload: Uint8Array) => pair.sign(payload)
         };
 
-        logger.info(
-            {
-                address: identity.address,
-                publicKey: identity.publicKey,
-                identity: pair.meta?.name ?? 'validator'
-            },
-            'validator identity loaded'
-        );
+        logInfo('Validator identity loaded', {
+            address: identity.address,
+            publicKey: identity.publicKey,
+            identity: pair.meta?.name ?? 'validator'
+        });
 
         return identity;
     } catch (err) {
-        logger.error({ err }, 'failed to initialize validator identity');
+        logError('Failed to initialize validator identity', { err });
         return null;
     }
 };

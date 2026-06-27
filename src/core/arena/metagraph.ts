@@ -9,7 +9,7 @@
  */
 
 import type { ApiPromise } from '@polkadot/api';
-import logger from '../../config/logger';
+import { logInfo } from '../../utils/logging';
 
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -86,7 +86,7 @@ async function refreshCache(api: ApiPromise, netuid: number): Promise<void> {
         );
     }
 
-    logger.info({ netuid, coldkeys: byColdkey.size, hotkeys: byHotkey.size }, 'arena metagraph cache refreshed');
+    logInfo('Metagraph cache refreshed', { netuid, coldkeys: byColdkey.size, hotkeys: byHotkey.size });
 
     cache = { byColdkey, byHotkey, fetchedAt: Date.now(), netuid };
 }

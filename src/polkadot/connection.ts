@@ -1,6 +1,6 @@
 import { ApiPromise, WsProvider } from '@polkadot/api';
 
-import logger from '../config/logger';
+import { logError, logInfo, logWarning } from '../utils/logging';
 
 let apiInstance: ApiPromise | null = null;
 let connectingPromise: Promise<ApiPromise> | null = null;
@@ -10,15 +10,15 @@ const createProvider = (endpoint: string): WsProvider => {
     const provider = new WsProvider(endpoint);
 
     provider.on('error', (err) => {
-        logger.error({ err }, 'polkadot provider error');
+        logError('Polkadot provider error', { err });
     });
 
     provider.on('disconnected', () => {
-        logger.warn({ endpoint }, 'polkadot provider disconnected');
+        logWarning('Polkadot provider disconnected', { endpoint });
     });
 
     provider.on('connected', () => {
-        logger.info({ endpoint }, 'polkadot provider connected');
+        logInfo('Polkadot provider connected', { endpoint });
     });
 
     return provider;
@@ -44,21 +44,22 @@ export const connectPolkadot = async (endpoint: string): Promise<ApiPromise> => 
             apiInstance = api;
 
             api.on('error', (err) => {
-                logger.error({ err }, 'polkadot api error');
+                logError('Polkadot API error', { err });
             });
 
             api.on('disconnected', () => {
-                logger.warn({ endpoint }, 'polkadot api disconnected');
+                logWarning('Polkadot API disconnected', { endpoint });
+
                 apiInstance = null;
                 connectingPromise = null;
             });
 
-            logger.info({ endpoint }, 'connected to polkadot api');
+            logInfo('Connected to Polkadot API', { endpoint });
 
             return api;
         })
         .catch((err) => {
-            logger.error({ err }, 'failed to connect to polkadot api');
+            logError('Failed to connect to Polkadot API', { err });
 
             connectingPromise = null;
             throw err;
@@ -74,9 +75,9 @@ export const disconnectPolkadot = async (): Promise<void> => {
 
     try {
         await apiInstance.disconnect();
-        logger.info({ endpoint: currentEndpoint }, 'polkadot api disconnected');
+        logInfo('Polkadot API disconnected', { endpoint: currentEndpoint });
     } catch (err) {
-        logger.error({ err }, 'error disconnecting polkadot api');
+        logError('Error disconnecting Polkadot API', { err });
     } finally {
         apiInstance = null;
         connectingPromise = null;

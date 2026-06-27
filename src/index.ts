@@ -1,17 +1,11 @@
-import { startAdminServer } from './admin/server';
 import config from './config/env';
-import logger from './config/logger';
-import { startHeartbeatLoop } from './core/heartbeat';
-import { startMonitoringService, stopMonitoringService } from './core/monitoring';
 import { startSetWeightsService } from './core/submit_weights';
-import { startTaskPoller } from './core/task-poller';
-import { registerValidator } from './core/validator-service';
-import { setValidatorId } from './core/validator-state';
 import { disconnectPolkadot } from './polkadot/connection';
 import { loadIdentity } from './utils/identity';
+import { logError, logInfo } from './utils/logging';
 
 const bootstrap = async () => {
-    logger.info('Starting validator daemon');
+    logInfo('Starting validator daemon');
 
     const identity = await loadIdentity(
         {
@@ -28,33 +22,14 @@ const bootstrap = async () => {
         throw new Error('Failed to load validator identity');
     }
 
-    const validatorId = await registerValidator(identity);
-    setValidatorId(validatorId);
-
-    startMonitoringService();
-
-    const heartbeatTimer = await startHeartbeatLoop(identity);
     const weightTimer = await startSetWeightsService();
-    const taskPoller = startTaskPoller();
-    const adminServer = startAdminServer();
 
     process.on('SIGTERM', async () => {
-        logger.info('received SIGTERM, shutting down services');
-
-        if (heartbeatTimer) {
-            clearInterval(heartbeatTimer);
-        }
+        logInfo('Received SIGTERM, shutting down services');
 
         if (weightTimer) {
             clearInterval(weightTimer);
         }
-
-        stopMonitoringService();
-
-        await taskPoller.stop();
-        await new Promise<void>((resolve) => {
-            adminServer.close(() => resolve());
-        });
 
         await disconnectPolkadot();
 
@@ -63,6 +38,6 @@ const bootstrap = async () => {
 };
 
 bootstrap().catch((err) => {
-    logger.error({ err }, 'validator failed to start');
+    logError('Validator failed to start', { err });
     process.exit(1);
 });

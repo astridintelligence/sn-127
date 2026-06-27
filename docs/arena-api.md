@@ -267,9 +267,10 @@ The built-in implementation in `src/core/arena/` serves as a reference. All modu
 src/core/arena/
   api.ts          — typed HTTP client (swap for your own)
   cache.ts        — incremental data accumulation
+  constants.ts    — hardcoded emission parameters (EMISSIONS_PERCENT, EMISSION_SPLITS)
   eligibility.ts  — Rule 1 (trades) + Rule 2 (±2h execution window)
-  ranking.ts      — top-3 by PnL, 60/30/10 split
+  pnl.ts          — trade replay PnL engine (independent of platform totalPnlPercent)
   metagraph.ts    — coldkey → UID lookup with 10-min cache
-  weights.ts      — blend vault targets with arena targets
+  weights.ts      — build weight targets from hardcoded constants
   index.ts        — orchestration
 ```

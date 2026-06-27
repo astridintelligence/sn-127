@@ -340,15 +340,15 @@ Eligible miners are ranked by **total PnL percentage** (highest first). Only the
 |        2        |    70%    |    30%    |     —     |
 |       3+        |    60%    |    30%    |    10%    |
 
-The total "arena allocation" is a percentage of subnet emissions (currently 25%), taken from the burn allocation.
+The total "arena allocation" is a percentage of subnet emissions set by `EMISSIONS_PERCENT` in `src/core/arena/constants.ts`, taken from the burn allocation.
 
 ### What This Means in Practice
 
-If the arena allocation is 25% of subnet emissions and there are 3 eligible miners:
+If `EMISSIONS_PERCENT` is the arena allocation and there are 3 eligible miners:
 
-- 1st place receives 60% of 25% = **15% of total emissions**
-- 2nd place receives 30% of 25% = **7.5% of total emissions**
-- 3rd place receives 10% of 25% = **2.5% of total emissions**
+- 1st place receives 60% of `EMISSIONS_PERCENT`% of total emissions
+- 2nd place receives 30% of `EMISSIONS_PERCENT`% of total emissions
+- 3rd place receives 10% of `EMISSIONS_PERCENT`% of total emissions
 
 For complete details on the ranking algorithm, see the [Ranking Algorithm](ranking-algorithm.md).
 

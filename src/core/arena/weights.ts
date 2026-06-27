@@ -1,115 +1,68 @@
 /**
- * Weight blending: merges vault targets with arena miner targets.
+ * Weight construction for arena delayed emissions.
  *
- * The arena emissions percentage is taken out of the UID=0 (burn) allocation.
- * Vault miners (all UIDs != 0) are unaffected.
+ * The weight set is built entirely from competition results:
  *
- * Rounding strategy: floor each arena weight, then add the integer remainder
- * to the top-ranked miner. This guarantees the total arena allocation sums
- * exactly to arenaPercent with no weight leaking or over-allocating.
+ *   UID 0 (burn)  = 100 − (EMISSIONS_PERCENT × number_of_competitions)
+ *   Per-competition top-3 miners receive EMISSIONS_PERCENT × emissionShare
  *
- * Example with arenaPercent=25 and vault targets [{uid:0, weight:75}, {uid:164, weight:25}]:
+ * Floor + remainder strategy ensures integer weights that sum exactly to 100:
+ * each miner weight is floored, and the leftover integer is given to the
+ * highest-weighted miner in that competition.
  *
- *   UID 0   (burn):      75 - 25                   = 50
- *   UID 164 (vault):     25                        = 25  (unchanged)
- *   UID top1 (arena):    floor(25×0.60) + rem(1)   = 16  (15 + 1 remainder)
- *   UID top2 (arena):    floor(25×0.30)            = 7
- *   UID top3 (arena):    floor(25×0.10)            = 2
+ * Example — 1 competition (25%), 3 qualifying miners:
+ *   UID 0 (burn):     75
+ *   UID A (rank 1):   floor(25×0.60) + 1 remainder = 16
+ *   UID B (rank 2):   floor(25×0.30)              = 7
+ *   UID C (rank 3):   floor(25×0.10)              = 2
+ *   Total:            100
  */
 
 import type { BittensorWeightTarget } from '../../config/env';
-import type { RankedMiner } from './ranking';
+import { EMISSIONS_PERCENT } from './constants';
 
-/**
- * Blend vault targets with delayed-emission payout winners.
- *
- * Each winner's raw weight = emissionsPercent × (splitPercent / 100), pre-summed
- * per UID by the caller. The total arena allocation (sum of all emissionsPercent
- * values) is subtracted from UID=0 (burn), identical to blendWeights().
- *
- * Floor + remainder strategy: floors each winner weight, gives the integer
- * remainder to the highest-weighted winner.
- *
- * Example: two competitions each at 25%, splits 60/30/10:
- *   UID A (comp1 rank1): floor(25×0.60) = 15  → +1 remainder = 16
- *   UID B (comp1 rank2): floor(25×0.30) = 7
- *   UID C (comp1 rank3): floor(25×0.10) = 2
- *   UID D (comp2 rank1): floor(25×0.60) = 15
- *   ...total = 50 subtracted from UID=0
- */
-export function blendPayoutWeights(
-    vaultTargets: readonly BittensorWeightTarget[],
-    totalPercent: number,
-    allocationByUid: Map<number, number>
-): BittensorWeightTarget[] {
-    if (allocationByUid.size === 0 || totalPercent <= 0) {
-        return [...vaultTargets];
-    }
-
-    const burnTarget = vaultTargets.find((t) => t.uid === 0);
-    if (!burnTarget) {
-        return [...vaultTargets];
-    }
-
-    const reducedBurnWeight = Math.max(0, burnTarget.weight - totalPercent);
-
-    const blended: BittensorWeightTarget[] = vaultTargets.map((t) =>
-        t.uid === 0 ? { uid: 0, weight: reducedBurnWeight } : { uid: t.uid, weight: t.weight }
-    );
-
-    // Sort descending so remainder goes to the top winner
-    const sorted = [...allocationByUid.entries()].sort((a, b) => b[1] - a[1]);
-
-    const floorWeights = sorted.map(([, w]) => Math.floor(w));
-    const remainder = Math.round(totalPercent - floorWeights.reduce((sum, w) => sum + w, 0));
-
-    for (let i = 0; i < sorted.length; i++) {
-        const [uid] = sorted[i];
-        const weight = floorWeights[i] + (i === 0 ? remainder : 0);
-        if (weight > 0) {
-            blended.push({ uid, weight });
-        }
-    }
-
-    return blended;
+export interface ResolvedCompetition {
+    competitionId: string;
+    rankedMiners: Array<{ uid: number; emissionShare: number }>;
 }
 
 /**
- * Blend vault weight targets with arena miner allocations.
+ * Build final weight targets from all resolved payout competitions.
  *
- * @param vaultTargets   Weight targets returned by the Vault API.
- * @param arenaPercent   Integer 0-100; percentage taken from UID=0 for arena miners.
- * @param rankedMiners   Top-3 ranked miners with their UIDs resolved.
+ * @param competitions  Competitions with ranked miners (UIDs + emission shares).
+ * @returns Array of {uid, weight} targets ready to submit to Bittensor.
  */
-export function blendWeights(
-    vaultTargets: readonly BittensorWeightTarget[],
-    arenaPercent: number,
-    rankedMiners: Array<RankedMiner & { uid: number }>
-): BittensorWeightTarget[] {
-    if (rankedMiners.length === 0 || arenaPercent <= 0) {
-        return [...vaultTargets];
+export function buildArenaWeights(competitions: ResolvedCompetition[]): BittensorWeightTarget[] {
+    if (competitions.length === 0) {
+        return [{ uid: 0, weight: 100 }];
     }
 
-    const burnTarget = vaultTargets.find((t) => t.uid === 0);
-    if (!burnTarget) {
-        // No burn UID in vault targets — cannot safely subtract the arena allocation.
-        return [...vaultTargets];
+    const totalArena = EMISSIONS_PERCENT * competitions.length;
+    const burnWeight = Math.max(0, 100 - totalArena);
+
+    // Accumulate weights per UID (a miner could appear in multiple competitions)
+    const weightByUid = new Map<number, number>();
+
+    for (const comp of competitions) {
+        // Compute floor weights for this competition's miners
+        const floorWeights = comp.rankedMiners.map((m) => Math.floor(EMISSIONS_PERCENT * m.emissionShare));
+        const allocated = floorWeights.reduce((s, w) => s + w, 0);
+        const remainder = EMISSIONS_PERCENT - allocated;
+
+        for (let i = 0; i < comp.rankedMiners.length; i++) {
+            const { uid } = comp.rankedMiners[i];
+            const weight = floorWeights[i] + (i === 0 ? remainder : 0);
+            if (weight > 0) {
+                weightByUid.set(uid, (weightByUid.get(uid) ?? 0) + weight);
+            }
+        }
     }
 
-    const reducedBurnWeight = Math.max(0, burnTarget.weight - arenaPercent);
+    const targets: BittensorWeightTarget[] = [{ uid: 0, weight: burnWeight }];
 
-    const blended: BittensorWeightTarget[] = vaultTargets.map((t) =>
-        t.uid === 0 ? { uid: 0, weight: reducedBurnWeight } : { uid: t.uid, weight: t.weight }
-    );
-
-    // Floor each arena share, then give the integer remainder to position 1.
-    const floorWeights = rankedMiners.map((m) => Math.floor(arenaPercent * m.emissionShare));
-    const remainder = arenaPercent - floorWeights.reduce((sum, w) => sum + w, 0);
-
-    for (let i = 0; i < rankedMiners.length; i++) {
-        const weight = floorWeights[i] + (i === 0 ? remainder : 0);
-        blended.push({ uid: rankedMiners[i].uid, weight });
+    for (const [uid, weight] of weightByUid.entries()) {
+        targets.push({ uid, weight });
     }
 
-    return blended;
+    return targets;
 }

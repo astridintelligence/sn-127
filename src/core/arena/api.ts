@@ -1,44 +1,32 @@
+import { logDebug, logWarning } from '../../utils/logging';
+
 const FETCH_TIMEOUT_MS = 10_000;
 const PAGE_SIZE = 500;
+const PRESENCE_PAGE_SIZE = 2000;
+const MAX_PAGES = 100;
 
-export interface ArenaParticipant {
+export interface CompetitionParticipantInfo {
     participantId: string;
     coldkey: string;
     hotkey: string | null;
     uid: number | null;
-    totalPnlPercent: number;
-    totalTrades: number;
-    rank: number | null;
+    isDisqualified: boolean;
 }
 
-export interface ArenaCompetition {
-    id: string;
-    name: string;
-    status: string;
-    startTime: string;
-}
-
-export interface PayoutWinner {
-    rank: number;
-    splitPercent: number;
-    coldkey: string;
-    hotkey: string | null;
-    uid: number | null;
-}
-
-export interface PayoutCompetition {
+export interface CompletedCompetition {
     competitionId: string;
     name: string;
-    emissionsPercent: number;
-    payoutEndsAt: string;
-    winners: PayoutWinner[];
+    startTime: string;
+    endTime: string;
+    initialBalance: number;
+    emissionsStartDate: string;
+    emissionsEndDate: string;
+    participants: CompetitionParticipantInfo[];
 }
 
-export interface ArenaInfo {
-    arenaEmissionsPercent: number;
-    competition: ArenaCompetition | null;
-    participants: ArenaParticipant[];
-    payoutCompetitions?: PayoutCompetition[];
+export async function fetchCompletedCompetitions(baseUrl: string): Promise<CompletedCompetition[]> {
+    const data = await fetchJson<{ competitions: CompletedCompetition[] }>(`${baseUrl}/public/arena/completed-competitions`);
+    return data.competitions ?? [];
 }
 
 export interface TradeEntry {
@@ -47,7 +35,13 @@ export interface TradeEntry {
     participantId: string | null;
     agentId: string;
     side: string;
+    positionSide: string;
     ticker: string;
+    quantity: number;
+    price: number;
+    fees: number;
+    realizedPnl: number;
+    leverage: number | null;
 }
 
 export interface ExecutionEntry {
@@ -58,54 +52,83 @@ export interface ExecutionEntry {
     isExternal: boolean;
 }
 
-export async function fetchArenaInfo(baseUrl: string): Promise<ArenaInfo> {
-    return fetchJson<ArenaInfo>(`${baseUrl}/public/arena/bittensor`);
+export interface PresenceEntry {
+    participantId: string | null;
+    executionTime: string;
 }
 
 export async function fetchAllTrades(baseUrl: string, competitionId: string, after: string | null): Promise<TradeEntry[]> {
     const all: TradeEntry[] = [];
     let offset = 0;
+    let page = 0;
 
-    while (true) {
+    while (page < MAX_PAGES) {
         const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
         if (after) {
             params.set('after', after);
         }
 
         const url = `${baseUrl}/public/competitions/${competitionId}/wallet-activity?${params}`;
-        const data = await fetchJson<{ trades: TradeEntry[] }>(url);
-        const page = data.trades ?? [];
 
-        all.push(...page);
-        if (page.length < PAGE_SIZE) {
+        logDebug('Fetching trades page', { competitionId, page, offset, after });
+
+        const data = await fetchJson<{ trades: TradeEntry[] }>(url);
+        const batch = data.trades ?? [];
+
+        all.push(...batch);
+        logDebug('Fetched trades page', { competitionId, page, fetched: batch.length, total: all.length });
+
+        if (batch.length < PAGE_SIZE) {
             break;
         }
 
         offset += PAGE_SIZE;
+        page++;
+    }
+
+    if (page >= MAX_PAGES) {
+        logWarning('fetchAllTrades hit page limit', { competitionId, maxPages: MAX_PAGES, total: all.length });
     }
 
     return all;
 }
 
-export async function fetchAllExecutions(baseUrl: string, competitionId: string, after: string | null): Promise<ExecutionEntry[]> {
-    const all: ExecutionEntry[] = [];
+export async function fetchExecutionPresence(
+    baseUrl: string,
+    competitionId: string,
+    participantIds: string[],
+    after: string | null
+): Promise<PresenceEntry[]> {
+    const all: PresenceEntry[] = [];
     let offset = 0;
+    let page = 0;
 
-    while (true) {
-        const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
+    while (page < MAX_PAGES) {
+        const params = new URLSearchParams({ limit: String(PRESENCE_PAGE_SIZE), offset: String(offset), participantIds: participantIds.join(',') });
         if (after) {
             params.set('after', after);
         }
 
-        const url = `${baseUrl}/public/competitions/${competitionId}/executions?${params}`;
-        const data = await fetchJson<{ executions: ExecutionEntry[] }>(url);
-        const page = data.executions ?? [];
+        const url = `${baseUrl}/public/competitions/${competitionId}/executions/presence?${params}`;
 
-        all.push(...page);
-        if (page.length < PAGE_SIZE) {
+        logDebug('Fetching execution presence page', { competitionId, page, offset, after });
+
+        const data = await fetchJson<{ executions: PresenceEntry[] }>(url);
+        const batch = data.executions ?? [];
+
+        all.push(...batch);
+        logDebug('Fetched execution presence page', { competitionId, page, fetched: batch.length, total: all.length });
+
+        if (batch.length < PRESENCE_PAGE_SIZE) {
             break;
         }
-        offset += PAGE_SIZE;
+
+        offset += PRESENCE_PAGE_SIZE;
+        page++;
+    }
+
+    if (page >= MAX_PAGES) {
+        logWarning('fetchExecutionPresence hit page limit', { competitionId, maxPages: MAX_PAGES, total: all.length });
     }
 
     return all;
