@@ -12,7 +12,7 @@ import {
 import { appendExecutions, appendTrades, getCache } from './cache';
 import { EMISSION_SPLITS, TOP_N } from './constants';
 import { checkEligibility, type EligibilityParticipant } from './eligibility';
-import { getNeuronByHotkey, getNeuronsByColdkey } from './metagraph';
+import { getNeuronByHotkey, getNeuronsByColdkey, MetagraphUnavailableError } from './metagraph';
 import { computeAllParticipantPnl } from './pnl';
 import { buildArenaWeights } from './weights';
 
@@ -69,7 +69,23 @@ export async function computeArenaWeights(api: ApiPromise, netuid: number, arena
     }> = [];
 
     for (const comp of competitions) {
-        const ranked = await resolveCompetitionMiners(api, netuid, arenaApiUrl, comp);
+        let ranked: Array<{ uid: number; emissionShare: number }>;
+
+        try {
+            ranked = await resolveCompetitionMiners(api, netuid, arenaApiUrl, comp);
+        } catch (err) {
+            // An unreadable metagraph means we cannot map miners to UIDs at all, so any weight
+            // set built from here would be wrong. Signal it the same way an arena API failure
+            // is signalled, so the caller reuses its last successful weights instead of
+            // skipping the whole cycle (the interval is an hour).
+            if (err instanceof MetagraphUnavailableError) {
+                logError('Metagraph unavailable, cannot resolve miner UIDs', { err, competitionId: comp.competitionId });
+                return null;
+            }
+
+            throw err;
+        }
+
         if (ranked.length > 0) {
             resolvedCompetitions.push({ competitionId: comp.competitionId, rankedMiners: ranked });
         }

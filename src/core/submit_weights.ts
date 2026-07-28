@@ -354,12 +354,13 @@ export const startSetWeightsService = async (): Promise<NodeJS.Timeout | null> =
 
             if (targets === null) {
                 if (lastSuccessfulWeights) {
-                    logWarning('Failed to fetch arena competitions, reusing last successful weights', {
+                    // Cause (arena API vs metagraph) is already logged by computeArenaWeights.
+                    logWarning('Weight computation failed, reusing last successful weights', {
                         cachedWeights: lastSuccessfulWeights.map((w) => ({ uid: w.uid, weight: w.weight }))
                     });
                     effectiveTargets = lastSuccessfulWeights;
                 } else {
-                    logWarning('Failed to fetch arena competitions and no previous weights cached, skipping cycle');
+                    logWarning('Weight computation failed and no previous weights cached, skipping cycle');
                     return;
                 }
             } else {
