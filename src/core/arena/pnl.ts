@@ -58,6 +58,9 @@ function replayParticipantTrades(participantId: string, trades: TradeEntry[], in
         const leverage = trade.leverage ?? 1;
 
         if (isOpeningTrade) {
+            // Opening trades incur fees too, deducted from the wallet just like on close
+            totalPnlAmount -= trade.fees;
+
             // Add to (or open) a position using weighted average entry price
             const existing = positions.get(key);
             if (existing) {

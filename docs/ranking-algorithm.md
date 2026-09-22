@@ -59,11 +59,12 @@ Rather than reading the platform's pre-computed `totalPnlPercent` field, the val
 1. Fetch all trades for the competition from the public API.
 2. For each participant, sort trades chronologically.
 3. Track open positions using weighted average entry price.
-4. For each closing trade: `tradePnl = priceDiff × quantity × leverage − fees`
+4. For each opening trade: `totalPnlAmount -= fees`
+5. For each closing trade: `tradePnl = priceDiff × quantity × leverage − fees`
     - Long: `priceDiff = exitPrice − entryPrice`
     - Short: `priceDiff = entryPrice − exitPrice`
-5. `totalPnlAmount = sum of all closing trade PnL values`
-6. `totalPnlPercent = totalPnlAmount / initialBalance × 100`
+6. `totalPnlAmount = sum of opening-trade fees (deducted) and closing-trade PnL values`
+7. `totalPnlPercent = totalPnlAmount / initialBalance × 100`
 
 This mirrors the platform's own calculation logic so results are auditably consistent.
 
