@@ -64,8 +64,12 @@ Every `BITTENSOR_WEIGHT_INTERVAL_MS` milliseconds the validator runs:
    b. GET /public/competitions/:id/executions?after=<cursor>       (incremental)
    c. Filter out disqualified participants
    d. Run eligibility checks (trades + execution coverage)
-   e. Replay trades to compute PnL per participant (src/core/arena/pnl.ts)
-   f. Rank top-3 eligible miners by replayed PnL
+   e. Replay the competition's metric per participant:
+      scoringMethod "pnl"          → replayed PnL (src/core/arena/pnl.ts)
+      scoringMethod "astrid_score" → Astrid Score from trades + 5m candles
+                                     (src/core/arena/astrid.ts,
+                                      GET /public/ohlcv/tickers/:tickerId/history)
+   f. Rank top-3 eligible miners by that metric
    g. Resolve Bittensor UIDs via metagraph query
 
 4. Build weight targets using hardcoded constants

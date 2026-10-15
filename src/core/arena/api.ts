@@ -5,6 +5,8 @@ const PAGE_SIZE = 500;
 const PRESENCE_PAGE_SIZE = 2000;
 const MAX_PAGES = 100;
 
+export type ScoringMethod = 'pnl' | 'astrid_score';
+
 export interface CompetitionParticipantInfo {
     participantId: string;
     coldkey: string;
@@ -21,6 +23,8 @@ export interface CompletedCompetition {
     initialBalance: number;
     emissionsStartDate: string;
     emissionsEndDate: string;
+    /** Which metric decides winners. Missing on older API versions, which means 'pnl'. */
+    scoringMethod?: ScoringMethod;
     participants: CompetitionParticipantInfo[];
 }
 
@@ -42,6 +46,10 @@ export interface TradeEntry {
     fees: number;
     realizedPnl: number;
     leverage: number | null;
+    /** Needed to look up candles for Astrid Score replay. Absent on older API versions. */
+    tickerId?: string;
+    /** Leverage on the order that produced the trade, as used by the platform's equity replay. */
+    orderLeverage?: number | null;
 }
 
 export interface ExecutionEntry {
@@ -132,6 +140,26 @@ export async function fetchExecutionPresence(
     }
 
     return all;
+}
+
+export interface OhlcvCandle {
+    timestamp: string;
+    close: string;
+}
+
+/**
+ * Fetch stored candles for one ticker over [from, to]. Throws when the API reports the result was
+ * truncated, since a partial price history would silently change the replayed score.
+ */
+export async function fetchOhlcvHistory(baseUrl: string, tickerId: string, from: Date, to: Date, interval: string): Promise<OhlcvCandle[]> {
+    const params = new URLSearchParams({ from: from.toISOString(), to: to.toISOString(), interval });
+    const data = await fetchJson<{ candles: OhlcvCandle[]; truncated?: boolean }>(`${baseUrl}/public/ohlcv/tickers/${tickerId}/history?${params}`);
+
+    if (data.truncated) {
+        throw new Error(`OHLCV history truncated for ticker ${tickerId}`);
+    }
+
+    return data.candles ?? [];
 }
 
 function withTimeout(ms: number): AbortSignal {
