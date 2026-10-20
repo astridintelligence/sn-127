@@ -10,8 +10,8 @@ At each weight-setting cycle the validator:
 
 1. Fetches completed competitions currently in their delayed-emissions payout window.
 2. For each competition, applies **eligibility rules** — miners who fail any rule receive zero weight.
-3. **Replays trades** independently to compute each eligible miner's PnL from raw trade records.
-4. **Ranks** the eligible miners by replayed PnL (highest wins).
+3. **Replays trades** independently to compute each eligible miner's score from raw trade records. The metric depends on the competition's `scoringMethod`: replayed PnL (`pnl`) or the Astrid Score (`astrid_score`).
+4. **Ranks** the eligible miners by that metric (highest wins).
 5. Awards emissions to the **top 3** only, split 60 / 30 / 10.
 
 ---
@@ -70,9 +70,26 @@ This mirrors the platform's own calculation logic so results are auditably consi
 
 ---
 
+## Astrid Score Replay
+
+Competitions with `scoringMethod: "astrid_score"` (MS6 onwards) are ranked by the Astrid Score (formula `astrid-v2`) instead of PnL. The validator replays it from public data only, in `src/core/arena/astrid.ts`:
+
+1. Trades from `/public/competitions/:id/wallet-activity` (including `tickerId` and `orderLeverage`).
+2. 5-minute candle closes per traded ticker from `/public/ohlcv/tickers/:tickerId/history`.
+3. Equity is marked to market every 5 minutes from `startTime` to `endTime`. Only trades executed inside that window count. Cash, margin and unrealized PnL follow the platform's own replay.
+4. Score = 0.25 PnL + 0.22 Calmar + 0.18 Sortino + 0.15 Ulcer + 0.12 Max drawdown + 0.08 Execution activity, each component normalized to 0-100 (PnL term is `100 × tanh(return / 0.12)`).
+
+A miner with no trades, or no valid equity samples, has no score. Unscored miners are never ranked, so they cannot take a payout slot. Ties break on `participantId` so every validator gets the same order.
+
+The eligibility rules above (disqualification, at least one trade, execution runs correlated with trades) still apply before scoring.
+
+If the candles or the `tickerId` field cannot be fetched, the validator keeps its last successful weights rather than paying on a partial replay.
+
+> The constants must match the platform. A change to the platform's Astrid formula needs the same change in `astrid.ts`.
+
 ## Ranking
 
-Eligible miners are sorted by **replayed** `totalPnlPercent` descending (highest PnL first).
+For `pnl` competitions, eligible miners are sorted by **replayed** `totalPnlPercent` descending (highest PnL first). For `astrid_score` competitions they are sorted by replayed Astrid Score descending.
 
 Only the **top 3** earn weight. Miners ranked 4th and below receive zero weight.
 
@@ -117,7 +134,7 @@ To maximize your chance of earning emissions:
 2. **Join** a miner competition and get approved.
 3. **Run your agent** continuously so it executes regularly during the competition.
 4. **Make trades** — at minimum one trade. Ensure your agent is running close to each trade.
-5. **Maximize PnL** — only the top 3 eligible miners get paid per competition.
+5. **Maximize the competition's scoring metric** (PnL, or the Astrid Score for `astrid_score` competitions) — only the top 3 eligible miners get paid per competition.
 6. **Remain in good standing** — the platform admin may disqualify participants for ineligible behavior before approving winners.
 
 ---
@@ -144,6 +161,7 @@ To maximize your chance of earning emissions:
 | `constants.ts`   | Hardcoded emission parameters (EMISSIONS_PERCENT, EMISSION_SPLITS)      |
 | `eligibility.ts` | Applies disqualification filter and Rules 1 & 2 per participant         |
 | `pnl.ts`         | Trade replay PnL engine (independent of platform's totalPnlPercent)     |
+| `astrid.ts`      | Astrid Score (astrid-v2) replay from trades and 5m candles              |
 | `metagraph.ts`   | Maps coldkeys → UIDs via Bittensor chain query                          |
 | `weights.ts`     | Constructs weight targets from hardcoded constants                      |
 | `index.ts`       | Orchestrates the full pipeline                                          |

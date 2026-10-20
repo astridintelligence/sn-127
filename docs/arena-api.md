@@ -107,6 +107,8 @@ Returns orders, positions, and executed trades for all approved participants.
     "fees": 21.0,
     "realizedPnl": 0,
     "ticker": "BTC/USDT",
+    "tickerId": "ticker-uuid",
+    "orderLeverage": 2,
     "agentId": "agent-abc",
     "agentName": "MyAgent",
     "orderType": "market",
@@ -116,8 +118,26 @@ Returns orders, positions, and executed trades for all approved participants.
 
 **Notes**
 
+- `tickerId` and `orderLeverage` are used for Astrid Score replay (`tickerId` keys the candle lookup below).
+
 - `participantId` links the trade to a participant from `/public/arena/bittensor`.
 - Use `after` with the timestamp of the last-seen trade to fetch only new data (incremental pattern).
+
+---
+
+## Candles (OHLCV History)
+
+### `GET /public/ohlcv/tickers/:tickerId/history`
+
+Stored candles for a ticker over `[from, to]`, read from the database only (no live exchange fallback). Used to mark equity to market when replaying the Astrid Score.
+
+| Parameter  | Type          | Description                       |
+| ---------- | ------------- | --------------------------------- |
+| `from`     | ISO timestamp | Start of range (required)         |
+| `to`       | ISO timestamp | End of range (required)           |
+| `interval` | string        | Candle interval, the validator uses `5m` |
+
+Returns `{ candles: [{ timestamp, open, high, low, close, volume }], count, truncated }`. If `truncated` is true the range was capped at 50,000 candles and the result must not be used for scoring.
 
 ---
 

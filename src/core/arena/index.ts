@@ -5,11 +5,14 @@ import {
     fetchAllTrades,
     fetchCompletedCompetitions,
     fetchExecutionPresence,
+    fetchOhlcvHistory,
     type CompletedCompetition,
+    type OhlcvCandle,
     type PresenceEntry,
     type TradeEntry
 } from './api';
-import { appendExecutions, appendTrades, getCache } from './cache';
+import { buildPriceIndex, collectTickerIds, computeAllAstridScores, SCORING_INTERVAL_MINUTES } from './astrid';
+import { appendExecutions, appendTrades, getCache, getCachedCandles, setCachedCandles } from './cache';
 import { EMISSION_SPLITS, TOP_N } from './constants';
 import { checkEligibility, type EligibilityParticipant } from './eligibility';
 import { getNeuronByHotkey, getNeuronsByColdkey, MetagraphUnavailableError } from './metagraph';
@@ -80,6 +83,11 @@ export async function computeArenaWeights(api: ApiPromise, netuid: number, arena
             // skipping the whole cycle (the interval is an hour).
             if (err instanceof MetagraphUnavailableError) {
                 logError('Metagraph unavailable, cannot resolve miner UIDs', { err, competitionId: comp.competitionId });
+                return null;
+            }
+
+            if (err instanceof PriceDataUnavailableError) {
+                logError('Price data unavailable, cannot score competition', { err, competitionId: comp.competitionId });
                 return null;
             }
 
@@ -165,21 +173,16 @@ async function resolveCompetitionMiners(
         return [];
     }
 
-    // Replay trades to compute PnL independently
-    const pnlByParticipant = computeAllParticipantPnl(cache.trades, comp.initialBalance);
-
-    // Rank eligible miners by replayed PnL (highest wins), take up to TOP_N
-    const ranked = passedEligibility
-        .map((r) => {
-            const pnl = pnlByParticipant.get(r.participant.participantId);
-            return { participant: r.participant, pnlPercent: pnl?.totalPnlPercent ?? 0 };
-        })
-        .sort((a, b) => b.pnlPercent - a.pnlPercent)
-        .slice(0, TOP_N);
+    const scoringMethod = comp.scoringMethod ?? 'pnl';
+    const ranked =
+        scoringMethod === 'astrid_score'
+            ? await rankByAstridScore(arenaApiUrl, comp, passedEligibility, cache.trades)
+            : rankByPnl(comp, passedEligibility, cache.trades);
 
     logInfo('Ranked miners', {
         competitionId: comp.competitionId,
-        ranked: ranked.map((r) => ({ coldkey: r.participant.coldkey, pnl: r.pnlPercent }))
+        scoringMethod,
+        ranked: ranked.map((r) => ({ coldkey: r.participant.coldkey, metric: r.metric }))
     });
 
     // Assign emission splits based on how many miners qualified
@@ -201,6 +204,81 @@ async function resolveCompetitionMiners(
     }
 
     return resolvedMiners;
+}
+
+interface RankedParticipant {
+    participant: EligibilityParticipant;
+    /** The value the participant was ranked on: replayed PnL % or Astrid Score. */
+    metric: number;
+}
+
+/** Rank by replayed PnL % (highest wins), top TOP_N. Used by competitions with scoringMethod 'pnl'. */
+function rankByPnl(comp: CompletedCompetition, passed: Array<{ participant: EligibilityParticipant }>, trades: TradeEntry[]): RankedParticipant[] {
+    const pnlByParticipant = computeAllParticipantPnl(trades, comp.initialBalance);
+
+    return passed
+        .map((r) => ({ participant: r.participant, metric: pnlByParticipant.get(r.participant.participantId)?.totalPnlPercent ?? 0 }))
+        .sort((a, b) => b.metric - a.metric)
+        .slice(0, TOP_N);
+}
+
+/**
+ * Rank by the Astrid Score replayed from trades and 5m candles (highest wins), top TOP_N.
+ * Used by competitions with scoringMethod 'astrid_score'.
+ *
+ * Participants whose score is withheld (no trades, no valid equity samples) are not ranked at all, rather
+ * than ranked last, so they can never take a payout slot. Ties break on participantId so every validator
+ * produces the same order.
+ */
+async function rankByAstridScore(
+    arenaApiUrl: string,
+    comp: CompletedCompetition,
+    passed: Array<{ participant: EligibilityParticipant }>,
+    trades: TradeEntry[]
+): Promise<RankedParticipant[]> {
+    const candlesByTicker = await loadCandles(arenaApiUrl, comp, trades);
+    const scores = computeAllAstridScores(trades, comp, buildPriceIndex(candlesByTicker));
+
+    return passed
+        .flatMap((r) => {
+            const score = scores.get(r.participant.participantId)?.score;
+            return score == null ? [] : [{ participant: r.participant, metric: score }];
+        })
+        .sort((a, b) => b.metric - a.metric || a.participant.participantId.localeCompare(b.participant.participantId))
+        .slice(0, TOP_N);
+}
+
+export class PriceDataUnavailableError extends Error {}
+
+async function loadCandles(arenaApiUrl: string, comp: CompletedCompetition, trades: TradeEntry[]): Promise<Map<string, OhlcvCandle[]>> {
+    const tradesWithoutTicker = trades.filter((t) => !t.tickerId).length;
+    if (tradesWithoutTicker > 0) {
+        // Older API version: Astrid replay is impossible, and ranking on a partial replay would pay the wrong miners.
+        throw new PriceDataUnavailableError(`Arena API trades lack tickerId (${tradesWithoutTicker} trades), cannot replay Astrid Score`);
+    }
+
+    // The platform marks to market from one candle before the start, so the first sample has a price.
+    const from = new Date(new Date(comp.startTime).getTime() - SCORING_INTERVAL_MINUTES * 60 * 1000);
+    const to = new Date(comp.endTime);
+    const result = new Map<string, OhlcvCandle[]>();
+
+    for (const tickerId of collectTickerIds(trades)) {
+        let candles = getCachedCandles(comp.competitionId, tickerId);
+
+        if (!candles) {
+            try {
+                candles = await fetchOhlcvHistory(arenaApiUrl, tickerId, from, to, '5m');
+            } catch (err) {
+                throw new PriceDataUnavailableError(`Failed to fetch candles for ticker ${tickerId}: ${(err as Error).message}`);
+            }
+
+            setCachedCandles(comp.competitionId, tickerId, candles);
+        }
+
+        result.set(tickerId, candles);
+    }
+
+    return result;
 }
 
 /** Trim EMISSION_SPLITS to the actual miner count and renormalize so they sum to 1. */

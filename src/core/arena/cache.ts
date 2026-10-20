@@ -1,4 +1,4 @@
-import type { PresenceEntry, TradeEntry } from './api';
+import type { OhlcvCandle, PresenceEntry, TradeEntry } from './api';
 
 export interface CompetitionCache {
     competitionId: string;
@@ -56,4 +56,16 @@ export function appendExecutions(cache: CompetitionCache, newExecutions: Presenc
     if (!cache.executionsLastFetchedAt || latest > cache.executionsLastFetchedAt) {
         cache.executionsLastFetchedAt = latest;
     }
+}
+
+// Candles for a completed competition never change once fetched (the range ends at the competition's end),
+// so they are kept per competition and ticker across cycles, independent of the single active trade cache.
+const candleCache = new Map<string, OhlcvCandle[]>();
+
+export function getCachedCandles(competitionId: string, tickerId: string): OhlcvCandle[] | undefined {
+    return candleCache.get(`${competitionId}:${tickerId}`);
+}
+
+export function setCachedCandles(competitionId: string, tickerId: string, candles: OhlcvCandle[]): void {
+    candleCache.set(`${competitionId}:${tickerId}`, candles);
 }
